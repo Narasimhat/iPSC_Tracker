@@ -6,8 +6,10 @@ from datetime import datetime, date
 from typing import Dict, Any, List, Optional, Tuple
 
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "ipsc_tracker.db")
-IMAGES_DIR = os.path.join(os.path.dirname(__file__), "images")
+# Allow overriding storage root (for server deployments with persistent disks)
+DATA_ROOT = os.environ.get("DATA_ROOT", os.path.dirname(__file__))
+DB_PATH = os.path.join(DATA_ROOT, "ipsc_tracker.db")
+IMAGES_DIR = os.path.join(DATA_ROOT, "images")
 
 
 def ensure_dirs() -> None:

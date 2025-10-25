@@ -58,3 +58,19 @@ Invite collaborators
 Notes
 - Each collaborator gets their own local SQLite DB and images unless you explicitly share those files outside Git.
 - To share a snapshot of your data, use Settings → Backup and send the folder to a teammate. They can replace their ipsc_tracker.db and images/ with your backup copies.
+
+## Deploy for team (Render, persistent disk)
+
+This keeps your SQLite database and uploaded images on a server disk so data persists across restarts.
+
+1) Repo contains `render.yaml`. Go to https://dashboard.render.com → New → Blueprint → Connect this repo
+2) Confirm the service settings:
+   - Build: `pip install -r requirements.txt`
+   - Start: `streamlit run app.py --server.address 0.0.0.0 --server.port $PORT`
+   - Env vars: `PYTHON_VERSION=3.11`, `DATA_ROOT=/var/data`
+   - Disk: name `data`, mount `/var/data`, size ~2GB (adjust as needed)
+3) Deploy. Render will give you a public URL to share with your team.
+
+Limitations
+- SQLite is fine for small teams. For higher concurrency, consider migrating to Postgres (e.g., Supabase) and object storage for images.
+- To migrate later, we can refactor `db.py` to use Postgres and move images to a bucket while keeping the UI unchanged.
