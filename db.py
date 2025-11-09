@@ -208,15 +208,39 @@ def delete_user(conn: sqlite3.Connection, username: str) -> None:
         conn.commit()
 
 
-def generate_thaw_id_for_date(conn: sqlite3.Connection, d: date) -> str:
+def _tokenize_name(text: Optional[str], max_len: Optional[int], fallback: str) -> str:
+    token = "".join(ch for ch in (text or "") if ch.isalnum()).upper()
+    if not token:
+        return fallback
+    if max_len:
+        return token[:max_len]
+    return token
+
+
+def _operator_initials(name: Optional[str]) -> str:
+    if not name:
+        return "OP"
+    parts = [p for p in name.replace("-", " ").split() if p]
+    if not parts:
+        return "OP"
+    initials = "".join(p[0] for p in parts[:2]).upper()
+    return initials or "OP"
+
+
+def generate_thaw_id(
+    conn: sqlite3.Connection,
+    cell_line: Optional[str],
+    operator: Optional[str],
+    d: date,
+) -> str:
     day = d.strftime("%Y%m%d")
+    cell_token = _tokenize_name(cell_line, None, "CELL")
+    op_token = _operator_initials(operator)
+    prefix = f"TH-{day}-{cell_token}-{op_token}"
     with closing(conn.cursor()) as cur:
-        cur.execute(
-            "SELECT COUNT(*) FROM logs WHERE event_type = 'Thawing' AND date = ?",
-            (d.isoformat(),),
-        )
+        cur.execute("SELECT COUNT(*) FROM logs WHERE thaw_id LIKE ?", (f"{prefix}%",))
         count = cur.fetchone()[0] or 0
-    return f"TH-{day}-{count + 1:03d}"
+    return f"{prefix}-{count + 1:02d}"
 
 
 def insert_log(conn: sqlite3.Connection, payload: Dict[str, Any]) -> int:
@@ -460,6 +484,22 @@ def predict_next_passage(conn: sqlite3.Connection, cell_line: str) -> Optional[i
         return p + 1 if p > 0 else None
     except Exception:
         return None
+
+
+def get_last_thaw_id(conn: sqlite3.Connection, cell_line: str) -> Optional[str]:
+    with closing(conn.cursor()) as cur:
+        cur.execute(
+            """
+            SELECT thaw_id
+            FROM logs
+            WHERE cell_line = ? AND event_type = 'Thawing' AND thaw_id IS NOT NULL
+            ORDER BY date DESC, created_at DESC
+            LIMIT 1
+            """,
+            (cell_line,),
+        )
+        row = cur.fetchone()
+    return row[0] if row and row[0] else None
 
 
 def top_values(

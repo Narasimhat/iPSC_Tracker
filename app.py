@@ -1,6 +1,7 @@
 import os
 import io
-from datetime import date, datetime
+import statistics
+from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -10,7 +11,7 @@ from db import (
     get_conn,
     init_db,
     insert_log,
-    generate_thaw_id_for_date,
+    generate_thaw_id,
     query_logs,
     list_distinct_thaw_ids,
     list_distinct_values,
@@ -25,6 +26,7 @@ from db import (
     backup_now,
     get_last_log_for_line_event,
     get_recent_logs_for_cell_line,
+    get_last_thaw_id,
     get_or_create_user,
     delete_user,
     IMAGES_DIR,
@@ -34,6 +36,43 @@ st.set_page_config(page_title="iPSC Culture Tracker", layout="wide")
 
 st.title("🧬 iPSC Culture Tracker")
 st.write("LIMS-style multi-user cell culture tracker with thaw-linked histories.")
+
+st.markdown(
+    """
+    <style>
+        div[data-testid="stForm"] {
+            background: #ffffff;
+            padding: 1.5rem 1.75rem;
+            border-radius: 18px;
+            border: 1px solid #e3e8f2;
+            box-shadow: 0 10px 30px rgba(15, 30, 67, 0.07);
+            margin-bottom: 2rem;
+            max-width: 1100px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        div[data-testid="stForm"] h4 {
+            margin-top: 1.2rem;
+            color: #1f2a44;
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 1rem;
+        }
+        .stTabs [data-baseweb="tab"] {
+            padding: 0.5rem 1rem;
+            border-radius: 999px;
+            background: #eef1f8;
+            color: #1f2a44;
+            font-weight: 500;
+        }
+        .stTabs [aria-selected="true"] {
+            background: #2d5bff !important;
+            color: #fff !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # Initialize database and storage
 conn = get_conn()
@@ -49,53 +88,104 @@ except Exception:
 my_name = st.selectbox("My name", options=["(none)"] + _usernames_all if _usernames_all else ["(none)"], index=0, help="Used for 'Assigned to me' filters")
 st.session_state["my_name"] = None if my_name == "(none)" else my_name
 
-# Initialize session state
-if "pending_thaw_id" not in st.session_state:
-    st.session_state["pending_thaw_id"] = ""
-
-tab_add, tab_history, tab_thaw, tab_dashboard, tab_settings = st.tabs([
+tab_add, tab_history, tab_thaw, tab_dashboard, tab_run, tab_settings = st.tabs([
     "Add Entry",
     "History",
     "Thaw Timeline",
     "Dashboard",
+    "Weekend Run Sheet",
     "Settings",
 ])
 
 # ----------------------- Add Entry Tab -----------------------
 with tab_add:
     st.subheader("📋 Add New Log Entry")
+    WORKFLOW_TEMPLATES = {
+        "Custom entry": {
+            "description": "Start from scratch and optionally reuse a previous record.",
+        },
+        "Thaw & expand": {
+            "event_type": "Thawing",
+            "next_action_days": 2,
+            "suggested_values": {
+                "vessel": "T25 flask",
+                "location": "Incubator A",
+                "medium": "StemFlex",
+                "cell_type": "iPSC",
+            },
+            "note_hint": "Record vial ID, split ratio, viability, and confluence checks.",
+        },
+        "Routine observation": {
+            "event_type": "Observation",
+            "next_action_days": 1,
+            "note_hint": "Capture confluence %, morphology, and any action items.",
+        },
+        "Media refresh": {
+            "event_type": "Media Change",
+            "next_action_days": 2,
+            "suggested_values": {
+                "medium": "StemFlex",
+            },
+            "note_hint": "Log media lot #, supplements, and observed health before/after.",
+        },
+    }
+    EVENT_FOLLOWUP_DEFAULTS = {
+        "Observation": 1,
+        "Media Change": 2,
+        "Split": 1,
+        "Thawing": 2,
+        "Cryopreservation": 7,
+    }
+    template_choice = "Custom entry"
+    template_cfg = WORKFLOW_TEMPLATES.get(template_choice, {})
 
     with st.form("add_entry_form", clear_on_submit=False):
-        cl_values = get_ref_values(conn, "cell_line")
-        cell_line = st.selectbox("Cell Line ID *", options=cl_values) if cl_values else st.text_input("Cell Line ID *", placeholder="e.g., BIHi005-A-24")
-
-        evt_values = get_ref_values(conn, "event_type")
-        event_type = st.selectbox("Event Type *", options=evt_values if evt_values else [
-            "Observation", "Media Change", "Split", "Thawing", "Cryopreservation", "Other"
-        ])
-        # Copy from a previous entry for this cell line
+        template_suggests = template_cfg.get("suggested_values", {})
+        recent_history = []
         prev = None
-        copy_col1, copy_col2 = st.columns([1, 2])
-        with copy_col1:
-            enable_copy = st.checkbox("Copy previous entry", value=False)
-        with copy_col2:
-            prev_choice = None
-            if enable_copy and cell_line:
-                recent = get_recent_logs_for_cell_line(conn, cell_line, limit=20)
-                if recent:
-                    display = [f"{r.get('date','')} • {r.get('event_type','')} • P{r.get('passage') or ''} • {r.get('vessel') or ''}" for r in recent]
-                    idx = st.selectbox("Choose an entry to copy", options=list(range(len(display))), format_func=lambda i: display[i])
-                    prev = recent[idx]
-                else:
-                    st.info("No previous entries for this Cell Line yet.")
 
-        # Option to reuse previous values for same task
-        reuse_prev = st.checkbox("Reuse previous values for this Cell Line + Event", value=False)
-        if reuse_prev and not prev and cell_line and event_type:
-            prev = get_last_log_for_line_event(conn, cell_line, event_type)
+        id_col1, id_col2, id_col3, id_col4 = st.columns([1.7, 1.3, 1.1, 0.9])
+        with id_col1:
+            cl_values = get_ref_values(conn, "cell_line")
+            if cl_values:
+                cell_line = st.selectbox("Cell Line ID *", options=cl_values, key="cell_line_select")
+            else:
+                cell_line = st.text_input("Cell Line ID *", value="", placeholder="e.g., BIHi005-A-24")
+        with id_col2:
+            evt_values = get_ref_values(conn, "event_type")
+            templ_evt = template_cfg.get("event_type") or ""
+            if evt_values:
+                idx_evt = evt_values.index(templ_evt) if templ_evt in evt_values else 0
+                event_type = st.selectbox("Event Type *", options=evt_values, index=idx_evt, key="event_type_select")
+            else:
+                fallback_evts = ["Observation", "Media Change", "Split", "Thawing", "Cryopreservation", "Other"]
+                idx_evt = fallback_evts.index(templ_evt) if templ_evt in fallback_evts else 0
+                event_type = st.selectbox("Event Type *", options=fallback_evts, index=idx_evt, key="event_type_select_fallback")
+        recent_history = get_recent_logs_for_cell_line(conn, cell_line, limit=20) if cell_line else []
+        with id_col3:
+            cryo_vial_position = template_suggests.get("cryo_vial_position", "")
+            if not cryo_vial_position and recent_history:
+                cryo_vial_position = recent_history[0].get("cryo_vial_position") or ""
+            cryo_vial_position = st.text_input(
+                "Cryovial Position",
+                value=cryo_vial_position,
+                placeholder="e.g., Box A2, Row 3 Col 5",
+            )
+        with id_col4:
+            default_volume = 0.0
+            if prev and prev.get("volume") is not None:
+                try:
+                    default_volume = float(prev.get("volume"))
+                except Exception:
+                    default_volume = 0.0
+            volume = st.number_input("Volume (mL)", min_value=0.0, step=0.5, value=default_volume)
+        form_ready = bool(cell_line and event_type)
 
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
+        prev = None
+
+        split_auto = None
+        row1_col1, row1_col2, row1_col3, row1_col4, row1_col5 = st.columns([1, 1, 1, 1, 1])
+        with row1_col1:
             default_passage = 1
             if cell_line:
                 pred = predict_next_passage(conn, cell_line)
@@ -108,142 +198,174 @@ with tab_add:
                             default_passage = int(last_for_line.get("passage"))
                         except Exception:
                             default_passage = 1
+                if event_type == "Split":
+                    last_for_line = get_last_log_for_cell_line(conn, cell_line)
+                    if last_for_line and last_for_line.get("passage"):
+                        try:
+                            split_auto = int(last_for_line.get("passage")) + 1
+                            default_passage = split_auto
+                        except Exception:
+                            split_auto = None
             passage_no = st.number_input("Passage No.", min_value=1, step=1, value=default_passage)
-        with col_b:
+            if split_auto:
+                st.caption(f"Split detected → Passage auto-set to {split_auto}.")
+        with row1_col2:
             vessel_refs = get_ref_values(conn, "vessel")
+            vessel_default = prev.get("vessel") if prev and prev.get("vessel") else template_suggests.get("vessel", "")
             if vessel_refs:
-                v_index = 0
-                if prev and prev.get("vessel") in vessel_refs:
-                    v_index = vessel_refs.index(prev.get("vessel"))
-                vessel = st.selectbox("Vessel", options=vessel_refs, index=v_index)
+                v_idx = vessel_refs.index(vessel_default) if vessel_default in vessel_refs else 0
+                vessel = st.selectbox("Vessel", options=vessel_refs, index=v_idx)
             else:
-                vessel_default = prev.get("vessel") if prev and prev.get("vessel") else ""
-                vessel = st.text_input("Vessel", placeholder="e.g., T25, 6-well plate", value=vessel_default)
-        with col_c:
+                vessel = st.text_input("Vessel", value=vessel_default, placeholder="e.g., T25, 6-well plate")
+        with row1_col3:
             location_refs = get_ref_values(conn, "location")
+            default_location = prev.get("location") if prev and prev.get("location") else template_suggests.get("location", "")
             if location_refs:
-                l_index = 0
-                if prev and prev.get("location") in location_refs:
-                    l_index = location_refs.index(prev.get("location"))
-                location = st.selectbox("Location", options=location_refs, index=l_index)
+                loc_idx = location_refs.index(default_location) if default_location in location_refs else 0
+                location = st.selectbox("Location", options=location_refs, index=loc_idx)
             else:
-                loc_default = prev.get("location") if prev and prev.get("location") else ""
-                location = st.text_input("Location", placeholder="e.g., Incubator A, Shelf 2", value=loc_default)
+                location = st.text_input("Location", value=default_location, placeholder="e.g., Incubator A, Shelf 2")
+        with row1_col4:
+            _med_sugs = top_values(conn, "medium", cell_line=cell_line) if cell_line else top_values(conn, "medium")
+            cm_refs = get_ref_values(conn, "culture_medium")
+            default_med = prev.get("medium") if prev and prev.get("medium") else template_suggests.get("medium", "")
+            if cm_refs:
+                med_idx = cm_refs.index(default_med) if default_med in cm_refs else 0
+                medium = st.selectbox("Culture Medium", options=cm_refs, index=med_idx)
+            else:
+                medium = st.text_input("Culture Medium", value=default_med, placeholder="e.g., StemFlex")
+            if _med_sugs:
+                st.caption("Popular: " + ", ".join([str(x) for x in _med_sugs]))
+        with row1_col5:
+            _ct_sugs = top_values(conn, "cell_type", cell_line=cell_line) if cell_line else top_values(conn, "cell_type")
+            ct_refs = get_ref_values(conn, "cell_type")
+            default_ct = prev.get("cell_type") if prev and prev.get("cell_type") else template_suggests.get("cell_type", "")
+            if ct_refs:
+                ct_idx = ct_refs.index(default_ct) if default_ct in ct_refs else 0
+                cell_type = st.selectbox("Cell Type", options=ct_refs, index=ct_idx)
+            else:
+                cell_type = st.text_input("Cell Type", value=default_ct, placeholder="e.g., iPSC, NPC, cardiomyocyte")
+            if _ct_sugs:
+                st.caption("Frequent: " + ", ".join([str(x) for x in _ct_sugs]))
+        if cell_line and recent_history:
+            prev_volumes = []
+            for entry in recent_history:
+                try:
+                    if entry.get("volume") is not None:
+                        prev_volumes.append(float(entry.get("volume")))
+                except Exception:
+                    continue
+            if prev_volumes:
+                median_vol = statistics.median(prev_volumes)
+                if median_vol > 0 and abs(volume - median_vol) > median_vol:
+                    st.warning(f"Volume differs from recent median ({median_vol:.1f} mL). Double-check before saving.")
 
-        # Culture Medium (single input with suggestions)
-        _med_sugs = top_values(conn, "medium", cell_line=cell_line) if cell_line else top_values(conn, "medium")
-        cm_refs = get_ref_values(conn, "culture_medium")
-        if cm_refs:
-            m_index = 0
-            if prev and prev.get("medium") in cm_refs:
-                m_index = cm_refs.index(prev.get("medium"))
-            medium = st.selectbox("Culture Medium", options=cm_refs, index=m_index)
-        else:
-            med_default = prev.get("medium") if prev and prev.get("medium") else ""
-            medium = st.text_input("Culture Medium", placeholder="e.g., StemFlex", value=med_default)
-        if _med_sugs:
-            st.caption("Suggestions: " + ", ".join([str(x) for x in _med_sugs]))
+        notes_placeholder = template_cfg.get("note_hint", "Observations, QC checks, follow-ups…")
+        notes = st.text_area("Notes", placeholder=notes_placeholder, height=120)
 
-        # Cell Type (single input with suggestions)
-        _ct_sugs = top_values(conn, "cell_type", cell_line=cell_line) if cell_line else top_values(conn, "cell_type")
-        ct_refs = get_ref_values(conn, "cell_type")
-        if ct_refs:
-            ct_index = 0
-            if prev and prev.get("cell_type") in ct_refs:
-                ct_index = ct_refs.index(prev.get("cell_type"))
-            cell_type = st.selectbox("Cell Type", options=ct_refs, index=ct_index)
-        else:
-            ct_default = prev.get("cell_type") if prev and prev.get("cell_type") else ""
-            cell_type = st.text_input("Cell Type", placeholder="e.g., iPSC, NPC, cardiomyocyte", value=ct_default)
-        if _ct_sugs:
-            st.caption("Suggestions: " + ", ".join([str(x) for x in _ct_sugs]))
-
-        # Volume in mL
-        default_volume = 0.0
-        if prev and prev.get("volume") is not None:
-            try:
-                default_volume = float(prev.get("volume"))
-            except Exception:
-                default_volume = 0.0
-        volume = st.number_input("Volume (mL)", min_value=0.0, step=0.5, value=default_volume)
-
-        notes = st.text_area("Notes / Observations")
-
-        user_rows = conn.execute("SELECT username FROM users ORDER BY username").fetchall()
-        usernames = [r[0] for r in user_rows]
-        if usernames:
-            operator = st.selectbox("Operator *", options=usernames)
-        else:
-            st.info("No operators yet. Add some under Settings → Operators.")
-            operator = st.text_input("Operator *", placeholder="Your name")
-        log_date = st.date_input("Date *", value=date.today())
-
-        all_users = []
-        try:
-            with get_conn() as _c:
-                rows = _c.execute("SELECT username FROM users ORDER BY username").fetchall()
-                all_users = [r[0] for r in rows]
-        except Exception:
+        st.divider()
+        sched_col1, sched_col2, sched_col3, sched_col4, sched_col5 = st.columns([1, 1, 1, 1, 1])
+        with sched_col1:
+            user_rows = conn.execute("SELECT username FROM users ORDER BY username").fetchall()
+            usernames = [r[0] for r in user_rows]
+            if usernames:
+                op_index = 0
+                if st.session_state.get("my_name") and st.session_state["my_name"] in usernames:
+                    op_index = usernames.index(st.session_state["my_name"])
+                operator = st.selectbox("Operator *", options=usernames, index=op_index)
+            else:
+                st.info("No operators yet. Add some under Settings → Operators.")
+                operator = st.text_input("Operator *", placeholder="Your name")
+        with sched_col2:
+            log_date = st.date_input("Date *", value=date.today())
+        with sched_col3:
             all_users = []
-
-        assigned_to = st.selectbox("Assigned To", options=["(unassigned)"] + all_users if all_users else ["(unassigned)"])
-        next_action_date = st.date_input("Next Action Date", value=None)
-
-        uploaded_img = st.file_uploader("Add colony image (optional)", type=["png", "jpg", "jpeg"])
-
-        cryo_vial_position = ""
+            try:
+                with get_conn() as _c:
+                    rows = _c.execute("SELECT username FROM users ORDER BY username").fetchall()
+                    all_users = [r[0] for r in rows]
+            except Exception:
+                all_users = []
+            assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
+            assign_index = 0
+            if st.session_state.get("my_name") and st.session_state["my_name"] in assigned_options:
+                assign_index = assigned_options.index(st.session_state["my_name"])
+            assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index)
+        with sched_col4:
+            default_nad = None
+            if template_cfg.get("next_action_days") is not None:
+                default_nad = date.today() + timedelta(days=template_cfg["next_action_days"])
+            elif EVENT_FOLLOWUP_DEFAULTS.get(event_type) is not None:
+                default_nad = date.today() + timedelta(days=EVENT_FOLLOWUP_DEFAULTS[event_type])
+            next_action_date = st.date_input("Next Action Date", value=default_nad)
+        with sched_col5:
+            st.empty()
+        thaw_preview = ""
         linked_thaw_id = ""
-
+        latest_thaw_for_line = get_last_thaw_id(conn, cell_line) if cell_line else None
         if event_type == "Thawing":
-            if not st.session_state["pending_thaw_id"]:
-                st.session_state["pending_thaw_id"] = generate_thaw_id_for_date(conn, log_date)
-            col_t0, col_t2 = st.columns(2)
-            with col_t0:
-                st.text_input("Thaw ID (auto)", value=st.session_state["pending_thaw_id"], disabled=True)
-            with col_t2:
-                cryo_vial_position = st.text_input("Cryo Vial Position", placeholder="e.g., Box A2, Row 3 Col 5")
+            if cell_line and operator:
+                thaw_preview = generate_thaw_id(conn, cell_line, operator, log_date)
+                thaw_label = thaw_preview
+            else:
+                thaw_label = "Select Cell Line + Operator"
+            st.text_input("Thaw ID", value=thaw_label, disabled=True, help="Auto-generated when saving.")
         else:
             thaw_ids = list_distinct_thaw_ids(conn)
+            options = ["(none)"] + thaw_ids if thaw_ids else ["(none)"]
+            idx = 0
+            if latest_thaw_for_line and latest_thaw_for_line in thaw_ids:
+                idx = options.index(latest_thaw_for_line)
             linked_thaw_id = st.selectbox(
-                "Link to Thaw ID",
-                options=["(none)"] + thaw_ids if thaw_ids else ["(none)"],
-                index=0,
-                help="Associate this entry with an existing thaw event",
+                "Link Thaw ID",
+                options=options,
+                index=idx,
+                help="Associate with an existing thaw event (required for follow-ups).",
             )
 
-        if cell_line:
-            hint_event = suggest_next_event(conn, cell_line)
-            if hint_event:
-                st.caption(f"Suggestion: Next likely event for {cell_line} is '{hint_event}'.")
-
-        submitted = st.form_submit_button("Save Entry")
+        submitted = st.form_submit_button("Save Entry", disabled=not form_ready)
         if submitted:
-            if not operator:
-                st.error("Please provide an Operator.")
+            missing_labels = []
+            def _is_blank(val):
+                return val is None or (isinstance(val, str) and not val.strip())
+            if _is_blank(cell_line):
+                missing_labels.append("Cell Line")
+            if _is_blank(vessel):
+                missing_labels.append("Vessel")
+            if _is_blank(location):
+                missing_labels.append("Location")
+            if _is_blank(medium):
+                missing_labels.append("Culture Medium")
+            if _is_blank(cell_type):
+                missing_labels.append("Cell Type")
+            if event_type == "Thawing" and _is_blank(cryo_vial_position):
+                missing_labels.append("Cryo Vial Position")
+            if event_type != "Thawing":
+                if not linked_thaw_id or linked_thaw_id == "(none)":
+                    missing_labels.append("Linked Thaw ID")
+            if _is_blank(operator):
+                missing_labels.append("Operator")
+            if missing_labels:
+                st.error(f"Please fill required fields: {', '.join(missing_labels)}.")
                 st.stop()
-            img_bytes = uploaded_img.getvalue() if uploaded_img else None
+            if next_action_date and next_action_date < date.today():
+                st.error("Next Action Date cannot be in the past.")
+                st.stop()
             thaw_id_val = ""
             if event_type == "Thawing":
-                thaw_id_val = st.session_state["pending_thaw_id"] or generate_thaw_id_for_date(conn, log_date)
-                st.session_state["pending_thaw_id"] = ""
+                thaw_id_val = generate_thaw_id(conn, cell_line, operator, log_date)
             else:
                 thaw_id_val = linked_thaw_id if linked_thaw_id and linked_thaw_id != "(none)" else ""
 
-            image_path = None
-            if img_bytes:
-                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-                ext = os.path.splitext(uploaded_img.name)[1] if uploaded_img and uploaded_img.name else ".jpg"
-                fname = f"{ts}_{(thaw_id_val or 'noThaw').replace('-', '')}{ext}"
-                fpath = os.path.join(IMAGES_DIR, fname)
-                with open(fpath, "wb") as f:
-                    f.write(img_bytes)
-                image_path = fpath
+            final_passage = int(passage_no) if passage_no else None
+            if event_type == "Split" and split_auto:
+                final_passage = split_auto
 
             payload = {
                 "date": log_date.isoformat(),
                 "cell_line": cell_line,
                 "event_type": event_type,
-                "passage": int(passage_no) if passage_no else None,
+                "passage": final_passage,
                 "vessel": vessel,
                 "location": location,
                 "medium": medium,
@@ -253,7 +375,7 @@ with tab_add:
                 "operator": operator,
                 "thaw_id": thaw_id_val,
                 "cryo_vial_position": cryo_vial_position,
-                "image_path": image_path,
+                "image_path": None,
                 "assigned_to": None if assigned_to in (None, "(unassigned)") else assigned_to,
                 "next_action_date": next_action_date.isoformat() if next_action_date else None,
                 "created_by": operator,
@@ -264,13 +386,19 @@ with tab_add:
 
 with tab_history:
     st.subheader("📜 Culture History")
-    fcol1, fcol2, fcol3 = st.columns([2, 1, 1])
+    fcol1, fcol2 = st.columns([2, 1])
     with fcol1:
         f_cell = st.text_input("Cell line contains", "")
     with fcol2:
-        f_event = st.selectbox("Event Type", ["(any)", "Observation", "Media Change", "Split", "Thawing", "Cryopreservation", "Other"]) 
-    with fcol3:
         f_assigned = st.text_input("Assigned To contains", "")
+    fcol3, fcol4, fcol5 = st.columns(3)
+    with fcol3:
+        f_event = st.selectbox("Event Type", ["(any)", "Observation", "Media Change", "Split", "Thawing", "Cryopreservation", "Other"])
+    with fcol4:
+        operator_opts = ["(any)"] + _usernames_all if _usernames_all else ["(any)"]
+        f_operator = st.selectbox("Operator", operator_opts)
+    with fcol5:
+        date_filter = st.selectbox("Date range", ["All", "Today", "Last 7 days", "Last 30 days"])
     only_mine = st.checkbox("Assigned to me only", value=False)
 
     logs = query_logs(
@@ -287,17 +415,50 @@ with tab_history:
         df = pd.DataFrame(logs)
         if f_assigned:
             df = df[df.get("assigned_to", "").astype(str).str.contains(f_assigned, case=False, na=False)]
+        if f_operator != "(any)" and "operator" in df.columns:
+            df = df[df["operator"] == f_operator]
         if only_mine and st.session_state.get("my_name"):
             df = df[df.get("assigned_to", "").astype(str) == st.session_state["my_name"]]
         elif only_mine and not st.session_state.get("my_name"):
             st.info("Set 'My name' at the top to enable 'Assigned to me'.")
+        if date_filter != "All":
+            df["_date"] = pd.to_datetime(df["date"], errors="coerce")
+            today_dt = pd.to_datetime(date.today())
+            if date_filter == "Today":
+                df = df[df["_date"] == today_dt]
+            elif date_filter == "Last 7 days":
+                df = df[df["_date"] >= today_dt - pd.Timedelta(days=6)]
+            elif date_filter == "Last 30 days":
+                df = df[df["_date"] >= today_dt - pd.Timedelta(days=29)]
+            df = df.drop(columns=["_date"])
         display_cols = [
-            "date", "cell_line", "event_type", "passage", "vessel", "location", "medium", "cell_type", "volume", "notes", "operator", "thaw_id", "cryo_vial_position", "assigned_to", "next_action_date", "created_by"
+            "date",
+            "cell_line",
+            "event_type",
+            "passage",
+            "vessel",
+            "location",
+            "medium",
+            "cell_type",
+            "volume",
+            "notes",
+            "operator",
+            "thaw_id",
+            "cryo_vial_position",
+            "assigned_to",
+            "next_action_date",
+            "created_by",
         ]
         for c in display_cols:
             if c not in df.columns:
                 df[c] = ""
-        pretty = df[display_cols].rename(columns={
+        if "created_at" not in df.columns:
+            df["created_at"] = ""
+        pretty = df.sort_values(by=["date", "created_at"], ascending=False, ignore_index=True)[["id"] + display_cols]
+        pretty["date"] = pd.to_datetime(pretty["date"], errors="coerce")
+        pretty["next_action_date"] = pd.to_datetime(pretty["next_action_date"], errors="coerce")
+        history_display = pretty.rename(columns={
+            "id": "ID",
             "date": "Date",
             "cell_line": "Cell Line",
             "event_type": "Event Type",
@@ -315,9 +476,67 @@ with tab_history:
             "next_action_date": "Next Action Date",
             "created_by": "Created By",
         })
-        st.dataframe(pretty, width='stretch')
-
-        csv = pretty.to_csv(index=False).encode('utf-8')
+        edited_history = st.data_editor(
+            history_display,
+            column_config={
+                "ID": st.column_config.Column(disabled=True),
+                "Date": st.column_config.DateColumn(),
+                "Next Action Date": st.column_config.DateColumn(),
+                "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
+                "Passage": st.column_config.NumberColumn(step=1),
+                "Volume (mL)": st.column_config.NumberColumn(step=0.5),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+        if st.button("Save history edits", key="save_history"):
+            try:
+                with conn:
+                    base_lookup = history_display.set_index("ID")
+                    for _, row in edited_history.iterrows():
+                        row_id = row["ID"]
+                        original = base_lookup.loc[row_id]
+                        updates = {}
+                        for col, orig_col in [
+                            ("Date","date"),
+                            ("Cell Line","cell_line"),
+                            ("Event Type","event_type"),
+                            ("Passage","passage"),
+                            ("Vessel","vessel"),
+                            ("Location","location"),
+                            ("Culture Medium","medium"),
+                            ("Cell Type","cell_type"),
+                            ("Volume (mL)","volume"),
+                            ("Notes","notes"),
+                            ("Operator","operator"),
+                            ("Thaw ID","thaw_id"),
+                            ("Cryo Vial Position","cryo_vial_position"),
+                            ("Assigned To","assigned_to"),
+                            ("Next Action Date","next_action_date"),
+                        ]:
+                            val = row[col]
+                            if col in ("Assigned To",) and (val in (None,"(unassigned)")):
+                                val = None
+                            if col in ("Date","Next Action Date") and pd.notna(val):
+                                val = pd.to_datetime(val).date().isoformat()
+                            if col in ("Date","Next Action Date") and pd.isna(val):
+                                val = None
+                            orig_val = original[col]
+                            if col in ("Date","Next Action Date") and isinstance(orig_val, pd.Timestamp):
+                                orig_val = orig_val.date().isoformat()
+                            if orig_val != val:
+                                updates[orig_col] = val
+                        if updates:
+                            fields = [f"{k} = ?" for k in updates]
+                            values = [updates[k] for k in updates]
+                            conn.execute(
+                                f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
+                                values + [row_id],
+                            )
+                st.success("History updated.")
+            except Exception as exc:
+                st.error(f"Failed to save history updates: {exc}")
+        csv = edited_history.to_csv(index=False).encode('utf-8')
         st.download_button("📂 Download CSV", data=csv, file_name="ipsc_culture_log.csv", mime="text/csv")
     else:
         st.info("No entries yet — add your first log in Add Entry tab.")
@@ -331,7 +550,19 @@ with tab_thaw:
         if not timeline.empty:
             timeline = timeline.sort_values(by=["date"]).reset_index(drop=True)
             tcols = [
-                "date", "cell_line", "event_type", "passage", "vessel", "location", "medium", "cell_type", "volume", "notes", "operator", "created_by"
+                "date",
+                "cell_line",
+                "event_type",
+                "passage",
+                "vessel",
+                "location",
+                "medium",
+                "cell_type",
+                "volume",
+                "notes",
+                "operator",
+                "cryo_vial_position",
+                "created_by",
             ]
             for c in tcols:
                 if c not in timeline.columns:
@@ -348,45 +579,261 @@ with tab_thaw:
                 "volume": "Volume (mL)",
                 "notes": "Notes",
                 "operator": "Operator",
+                "cryo_vial_position": "Cryovial Position",
                 "created_by": "Created By",
             }), width='stretch')
         else:
             st.info("No records for this Thaw ID yet.")
 
 with tab_dashboard:
-    st.subheader("📅 Upcoming & Overdue")
+    st.subheader("📅 Team Dashboard")
     dash_only_mine = st.checkbox("Show only items assigned to me", value=False)
-    # Basic upcoming/overdue view using Next Action Date
     all_logs = query_logs(conn)
     df_all = pd.DataFrame(all_logs) if all_logs else pd.DataFrame([])
-    if not df_all.empty and "next_action_date" in df_all.columns:
-        today = pd.to_datetime(date.today())
+    if df_all.empty:
+        st.info("No entries yet — add a log to unlock the dashboard.")
+    else:
+        if "assigned_to" not in df_all.columns:
+            df_all["assigned_to"] = ""
+        if "next_action_date" not in df_all.columns:
+            df_all["next_action_date"] = None
+        if "created_at" not in df_all.columns:
+            df_all["created_at"] = ""
+        today_dt = pd.to_datetime(date.today())
+        df_all["_date"] = pd.to_datetime(df_all["date"], errors="coerce")
         df_all["_nad"] = pd.to_datetime(df_all["next_action_date"], errors="coerce")
-        if dash_only_mine and st.session_state.get("my_name"):
-            df_all = df_all[df_all.get("assigned_to", "").astype(str) == st.session_state["my_name"]]
-        elif dash_only_mine and not st.session_state.get("my_name"):
-            st.info("Set 'My name' at the top to filter to your items.")
-        df_overdue = df_all[(~df_all["_nad"].isna()) & (df_all["_nad"] < today)]
-        df_upcoming = df_all[(~df_all["_nad"].isna()) & (df_all["_nad"] >= today)].sort_values("_nad").head(50)
+
+        logs_today = df_all[df_all["_date"] == today_dt]
+        logs_yesterday = df_all[df_all["_date"] == (today_dt - pd.Timedelta(days=1))]
+        active_window = today_dt - pd.Timedelta(days=6)
+        active_cell_lines = df_all[df_all["_date"] >= active_window]["cell_line"].nunique()
+        overdue_total = int(((~df_all["_nad"].isna()) & (df_all["_nad"] < today_dt)).sum())
+
+        stats = st.columns(3)
+        stats[0].metric("Logs today", int(len(logs_today)), delta=int(len(logs_today) - len(logs_yesterday)))
+        stats[1].metric("Active cell lines (7d)", int(active_cell_lines))
+        stats[2].metric("Overdue actions", overdue_total)
+
+        view_df = df_all.copy()
+        if dash_only_mine:
+            if st.session_state.get("my_name"):
+                view_df = view_df[view_df.get("assigned_to", "").astype(str) == st.session_state["my_name"]]
+            else:
+                st.info("Set 'My name' at the top to filter to your items.")
+
+        actions_df = view_df[~view_df["_nad"].isna()]
+        df_overdue = actions_df[actions_df["_nad"] < today_dt].sort_values("_nad")
+        df_upcoming = actions_df[actions_df["_nad"] >= today_dt].sort_values("_nad").head(50)
+
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**Overdue**")
             if df_overdue.empty:
                 st.info("No overdue items.")
             else:
-                st.dataframe(df_overdue[["cell_line","event_type","assigned_to","next_action_date","notes"]].rename(columns={
-                    "cell_line":"Cell Line","event_type":"Event Type","assigned_to":"Assigned To","next_action_date":"Next Action Date","notes":"Notes"
-                }), width='stretch')
+                st.dataframe(
+                    df_overdue[["cell_line", "event_type", "assigned_to", "next_action_date", "notes"]].rename(columns={
+                        "cell_line": "Cell Line",
+                        "event_type": "Event Type",
+                        "assigned_to": "Assigned To",
+                        "next_action_date": "Next Action Date",
+                        "notes": "Notes",
+                    }),
+                    use_container_width=True,
+                )
         with c2:
             st.markdown("**Upcoming**")
             if df_upcoming.empty:
                 st.info("No upcoming items.")
             else:
-                st.dataframe(df_upcoming[["cell_line","event_type","assigned_to","next_action_date","notes"]].rename(columns={
-                    "cell_line":"Cell Line","event_type":"Event Type","assigned_to":"Assigned To","next_action_date":"Next Action Date","notes":"Notes"
-                }), width='stretch')
+                st.dataframe(
+                    df_upcoming[["cell_line", "event_type", "assigned_to", "next_action_date", "notes"]].rename(columns={
+                        "cell_line": "Cell Line",
+                        "event_type": "Event Type",
+                        "assigned_to": "Assigned To",
+                        "next_action_date": "Next Action Date",
+                        "notes": "Notes",
+                    }),
+                    use_container_width=True,
+                )
+
+        my_name = st.session_state.get("my_name")
+        if my_name:
+            my_queue = df_all[(df_all.get("assigned_to", "").astype(str) == my_name) & (~df_all["_nad"].isna())].sort_values("_nad")
+            if not my_queue.empty:
+                st.markdown("**My queue**")
+                st.dataframe(
+                    my_queue[["cell_line", "event_type", "next_action_date", "notes"]].rename(columns={
+                        "cell_line": "Cell Line",
+                        "event_type": "Event Type",
+                        "next_action_date": "Next Action Date",
+                        "notes": "Notes",
+                    }),
+                    use_container_width=True,
+                )
+
+        assigned_series = actions_df["assigned_to"]
+        unassigned = actions_df[assigned_series.isna() | (assigned_series == "")]
+        if not unassigned.empty:
+            st.markdown("**Needs owner**")
+            st.dataframe(
+                unassigned[["cell_line", "event_type", "next_action_date", "notes"]].rename(columns={
+                    "cell_line": "Cell Line",
+                    "event_type": "Event Type",
+                    "next_action_date": "Next Action Date",
+                    "notes": "Notes",
+                }),
+                use_container_width=True,
+            )
+
+        st.markdown("**Recent team activity**")
+        recent = df_all.sort_values(by="created_at", ascending=False).head(12).copy()
+        if not recent.empty:
+            recent["_created_at"] = pd.to_datetime(recent["created_at"], errors="coerce")
+            recent["Logged"] = recent["_created_at"].dt.strftime("%Y-%m-%d %H:%M")
+            st.dataframe(
+                recent[["Logged", "cell_line", "event_type", "operator", "assigned_to", "notes"]].rename(columns={
+                    "cell_line": "Cell Line",
+                    "event_type": "Event Type",
+                    "operator": "Operator",
+                    "assigned_to": "Assigned To",
+                    "notes": "Notes",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No activity yet.")
+
+with tab_run:
+    st.subheader("🧪 Weekend Run Sheet")
+    my_user = st.session_state.get("my_name")
+    if not my_user:
+        st.info("Set 'My name' at the top to view your assigned tasks.")
     else:
-        st.info("No Next Action Dates yet.")
+        all_logs = query_logs(conn)
+        df_tasks = pd.DataFrame(all_logs) if all_logs else pd.DataFrame([])
+        if df_tasks.empty:
+            st.info("No tasks yet.")
+        else:
+            if "assigned_to" not in df_tasks.columns:
+                df_tasks["assigned_to"] = ""
+            if "next_action_date" not in df_tasks.columns:
+                df_tasks["next_action_date"] = None
+            df_tasks["next_action_date"] = pd.to_datetime(df_tasks["next_action_date"], errors="coerce")
+            today_dt = pd.to_datetime(date.today())
+            df_tasks = df_tasks[
+                (df_tasks.get("assigned_to", "").astype(str) == my_user)
+                & (~df_tasks["next_action_date"].isna())
+                & (df_tasks["next_action_date"].dt.date >= today_dt.date())
+            ]
+            media_filter = st.multiselect(
+                "Filter by medium",
+                options=sorted(df_tasks["medium"].dropna().unique()),
+            )
+            date_filter = st.selectbox("Show", ["All", "Today", "Tomorrow", "Today + Tomorrow"])
+            if media_filter:
+                df_tasks = df_tasks[df_tasks["medium"].isin(media_filter)]
+            if date_filter == "Today":
+                df_tasks = df_tasks[df_tasks["next_action_date"].dt.date == today_dt.date()]
+            elif date_filter == "Tomorrow":
+                df_tasks = df_tasks[df_tasks["next_action_date"].dt.date == (today_dt + pd.Timedelta(days=1)).date()]
+            elif date_filter == "Today + Tomorrow":
+                df_tasks = df_tasks[df_tasks["next_action_date"].dt.date.isin({today_dt.date(), (today_dt + pd.Timedelta(days=1)).date()})]
+            if df_tasks.empty:
+                st.success("No upcoming tasks assigned to you.")
+            else:
+                df_tasks["days_to_due"] = (df_tasks["next_action_date"] - today_dt).dt.days
+                df_tasks = df_tasks.sort_values(by="next_action_date")
+                df_tasks["Location"] = df_tasks["location"].fillna("")
+                df_tasks["Medium"] = df_tasks["medium"].fillna("")
+                df_tasks["done"] = df_tasks["next_action_date"].dt.date < today_dt.date()
+                run_cols_display = df_tasks[["id","cell_line","event_type","done","vessel","Location","Medium","cell_type","volume","assigned_to","next_action_date","notes"]].rename(columns={
+                    "id":"ID",
+                    "cell_line":"Cell Line",
+                    "event_type":"Event",
+                    "done":"Mark Done",
+                    "vessel":"Vessel",
+                    "cell_type":"Cell Type",
+                    "volume":"Volume (mL)",
+                    "assigned_to":"Assigned To",
+                    "next_action_date":"Next Action",
+                    "notes":"Notes",
+                })
+                edited = st.data_editor(
+                    run_cols_display,
+                    column_config={
+                        "ID": st.column_config.Column(disabled=True),
+                        "Cell Line": st.column_config.Column(disabled=True),
+                        "Event": st.column_config.Column(disabled=True),
+                        "Mark Done": st.column_config.CheckboxColumn(),
+                        "Vessel": st.column_config.Column(disabled=False),
+                        "Location": st.column_config.Column(disabled=False),
+                        "Medium": st.column_config.Column(disabled=False),
+                        "Cell Type": st.column_config.Column(disabled=False),
+                        "Volume (mL)": st.column_config.Column(disabled=False),
+                        "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
+                        "Next Action": st.column_config.DateColumn(),
+                        "Notes": st.column_config.TextColumn(),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                st.caption("Edit fields inline and click 'Save updates' to record changes.")
+                if st.button("Save updates", key="save_run_sheet"):
+                    # Compare edited vs original to detect changes
+                    changes = []
+                    for _, row in edited.iterrows():
+                        orig = df_tasks[df_tasks["id"] == row["ID"]].iloc[0]
+                        payload = {}
+                        if orig.get("location","") != row["Location"]:
+                            payload["location"] = row["Location"]
+                        if orig.get("medium","") != row["Medium"]:
+                            payload["medium"] = row["Medium"]
+                        if orig.get("cell_type","") != row["Cell Type"]:
+                            payload["cell_type"] = row["Cell Type"]
+                        if (orig.get("volume") or 0) != row["Volume (mL)"]:
+                            payload["volume"] = row["Volume (mL)"]
+                        if orig.get("assigned_to","") != row["Assigned To"]:
+                            payload["assigned_to"] = None if not row["Assigned To"] or row["Assigned To"] == "(unassigned)" else row["Assigned To"]
+                        if row["Mark Done"]:
+                            payload["next_action_date"] = None
+                        elif str(orig.get("next_action_date")) != str(row["Next Action"]):
+                            payload["next_action_date"] = row["Next Action"].isoformat() if pd.notna(row["Next Action"]) else None
+                        if orig.get("notes","") != row["Notes"]:
+                            payload["notes"] = row["Notes"]
+                        if payload:
+                            payload["id"] = row["ID"]
+                            changes.append(payload)
+                    if not changes:
+                        st.info("No changes to save.")
+                    else:
+                        try:
+                            with conn:
+                                for change in changes:
+                                    fields = [f"{k} = ?" for k in change.keys() if k != "id"]
+                                    values = [change[k] for k in change.keys() if k != "id"]
+                                    conn.execute(
+                                        f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
+                                        values + [change["id"]],
+                                    )
+                            st.success("Updates saved.")
+                        except Exception as exc:
+                            st.error(f"Failed to save: {exc}")
+
+                st.markdown("#### Media prep summary (total volume)")
+                if edited.empty:
+                    st.info("Nothing to summarize.")
+                else:
+                    summary_df = edited.copy()
+                    summary_df["Volume (mL)"] = pd.to_numeric(summary_df["Volume (mL)"], errors="coerce").fillna(0.0)
+                    media_summary = (
+                        summary_df.groupby("Medium", as_index=False)["Volume (mL)"]
+                        .sum()
+                        .rename(columns={"Medium": "Media", "Volume (mL)": "Total Volume (mL)"})
+                        .sort_values("Total Volume (mL)", ascending=False)
+                    )
+                    st.dataframe(media_summary, use_container_width=True)
 
 with tab_settings:
     st.subheader("⚙️ Settings (Reference Lists)")
