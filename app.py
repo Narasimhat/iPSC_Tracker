@@ -261,7 +261,7 @@ with tab_add:
                     st.warning(f"Volume differs from recent median ({median_vol:.1f} mL). Double-check before saving.")
 
         notes_placeholder = template_cfg.get("note_hint", "Observations, QC checks, follow-ups…")
-        notes = st.text_area("Notes", placeholder=notes_placeholder, height=120)
+        notes = st.text_area("Notes", placeholder=notes_placeholder, height=80)
 
         st.divider()
         sched_col1, sched_col2, sched_col3, sched_col4, sched_col5 = st.columns([1, 1, 1, 1, 1])

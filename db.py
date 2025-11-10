@@ -114,6 +114,16 @@ def init_db(conn: sqlite3.Connection) -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS weekend_schedule (
+                date TEXT PRIMARY KEY,
+                assigned_to TEXT,
+                notes TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_logs_thaw_id ON logs (thaw_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs (created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_logs_created_by ON logs (created_by)")
@@ -527,3 +537,49 @@ def suggest_next_event(conn: sqlite3.Connection, cell_line: str) -> Optional[str
         "cryopreservation": "Observation",
     }
     return mapping.get(last_evt)
+
+
+def get_weekend_schedule(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    with closing(conn.cursor()) as cur:
+        cur.execute(
+            "SELECT date, assigned_to, notes, updated_at FROM weekend_schedule ORDER BY date DESC"
+        )
+        rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_weekend_assignment(
+    conn: sqlite3.Connection,
+    dates: List[str],
+    assigned_to: Optional[str],
+    notes: Optional[str],
+) -> None:
+    with closing(conn.cursor()) as cur:
+        for date_str in dates:
+            cur.execute(
+                """
+                INSERT INTO weekend_schedule (date, assigned_to, notes, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    assigned_to = excluded.assigned_to,
+                    notes = excluded.notes,
+                    updated_at = excluded.updated_at
+                """,
+                (date_str, assigned_to, notes, datetime.utcnow().isoformat()),
+            )
+        conn.commit()
+
+
+def delete_weekend_assignment(conn: sqlite3.Connection, date_str: str) -> None:
+    with closing(conn.cursor()) as cur:
+        cur.execute("DELETE FROM weekend_schedule WHERE date = ?", (date_str,))
+        conn.commit()
+
+
+def get_weekend_assignment_for_date(conn: sqlite3.Connection, target_date: date) -> Optional[str]:
+    with closing(conn.cursor()) as cur:
+        cur.execute("SELECT assigned_to FROM weekend_schedule WHERE date = ?", (target_date.isoformat(),))
+        row = cur.fetchone()
+    if row and row[0]:
+        return row[0]
+    return None
