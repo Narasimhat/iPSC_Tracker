@@ -562,6 +562,21 @@ with tab_history:
         csv = edited_history.to_csv(index=False).encode('utf-8')
         st.download_button("📂 Download CSV", data=csv, file_name="ipsc_culture_log.csv", mime="text/csv")
 
+        if not history_display.empty:
+            summary_df = history_display.copy()
+            summary_df["Volume (mL)"] = pd.to_numeric(summary_df["Volume (mL)"], errors="coerce").fillna(0.0)
+            media_summary = (
+                summary_df.groupby("Culture Medium", as_index=False)["Volume (mL)"]
+                .sum()
+                .rename(columns={"Culture Medium": "Media", "Volume (mL)": "Total Volume (mL)"})
+                .sort_values("Total Volume (mL)", ascending=False)
+            )
+            st.markdown("#### Media prep summary (history view)")
+            if media_summary.empty:
+                st.info("No volume data to summarize.")
+            else:
+                st.dataframe(media_summary, use_container_width=True)
+
         st.markdown("---")
         with st.expander("📓 Lab book export"):
             export_date = st.date_input("Day to summarize", value=date.today(), key="lab_book_date")
