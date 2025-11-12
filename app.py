@@ -2,6 +2,7 @@ import os
 import io
 import statistics
 from datetime import date, datetime, timedelta
+from typing import Optional
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -92,17 +93,32 @@ except Exception:
     _usernames_all = []
 try:
     _rows_colors = conn.execute("SELECT username, COALESCE(color_hex, '') FROM users").fetchall()
-    _user_colors = {r[0]: (r[1] or "#4a90e2") for r in _rows_colors}
+    _user_colors = {r[0]: (r[1] or "") for r in _rows_colors}
 except Exception:
     _user_colors = {}
 DEFAULT_USER_COLOR = "#4a90e2"
 
 
-def _with_alpha(color: str, alpha: str = "33") -> str:
+def _with_alpha(color: str, alpha: float = 0.25) -> str:
     base = (color or DEFAULT_USER_COLOR).lstrip("#")
-    if len(base) == 6:
-        return f"#{base}{alpha}"
-    return f"#{base}"
+    if len(base) >= 6:
+        try:
+            r = int(base[0:2], 16)
+            g = int(base[2:4], 16)
+            b = int(base[4:6], 16)
+            return f"rgba({r},{g},{b},{alpha})"
+        except ValueError:
+            pass
+    return color or DEFAULT_USER_COLOR
+
+
+def _color_for_user(username: Optional[str]) -> str:
+    if not username or username in ("", "(unassigned)"):
+        return "#dcdcdc"
+    stored = _user_colors.get(username)
+    if stored and stored.strip():
+        return stored.strip()
+    return DEFAULT_USER_COLOR
 my_name = st.selectbox("My name", options=["(none)"] + _usernames_all if _usernames_all else ["(none)"], index=0, help="Used for 'Assigned to me' filters")
 st.session_state["my_name"] = None if my_name == "(none)" else my_name
 
@@ -494,7 +510,7 @@ with tab_history:
         pretty = df.sort_values(by=["date", "created_at"], ascending=False, ignore_index=True)[["id"] + display_cols]
         pretty["date"] = pd.to_datetime(pretty["date"], errors="coerce")
         pretty["next_action_date"] = pd.to_datetime(pretty["next_action_date"], errors="coerce")
-        pretty["assigned_color"] = pretty["assigned_to"].apply(lambda x: _user_colors.get(str(x), DEFAULT_USER_COLOR))
+        pretty["assigned_color"] = pretty["assigned_to"].apply(_color_for_user)
         history_display = pretty.rename(columns={
             "id": "ID",
             "date": "Date",
@@ -519,7 +535,7 @@ with tab_history:
         color_series = history_display.set_index("ID")["Assigned Color"]
         history_view = history_display.drop(columns=["Assigned Color"]).set_index("ID")
         styled_history = history_view.style.apply(
-            lambda row: [f"background-color: {_with_alpha(color_series.loc[row.name])};"] * len(row),
+            lambda row: [f"background-color: {_with_alpha(color_series.loc[row.name], 0.25)};"] * len(row),
             axis=1,
         )
         st.dataframe(styled_history, use_container_width=True)
@@ -911,11 +927,11 @@ with tab_run:
                 "next_action_date":"Next Action",
                 "notes":"Notes",
             })
-            run_cols_display["Assigned Color"] = run_cols_display["Assigned To"].apply(lambda x: _user_colors.get(str(x), DEFAULT_USER_COLOR))
+            run_cols_display["Assigned Color"] = run_cols_display["Assigned To"].apply(_color_for_user)
             color_series_run = run_cols_display.set_index("ID")["Assigned Color"]
             run_view = run_cols_display.drop(columns=["Assigned Color"]).set_index("ID")
             styled_run = run_view.style.apply(
-                lambda row: [f"background-color: {_with_alpha(color_series_run.loc[row.name], '22')};"] * len(row),
+                lambda row: [f"background-color: {_with_alpha(color_series_run.loc[row.name], 0.18)};"] * len(row),
                 axis=1,
             )
             st.dataframe(styled_run, use_container_width=True)
