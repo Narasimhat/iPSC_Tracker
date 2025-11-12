@@ -1107,14 +1107,17 @@ with tab_scheduler:
 
         filtered = sched_df.copy()
         if filter_start:
-            filtered = filtered[filtered["date"].dt.date >= filter_start]
+            start_ts = pd.Timestamp(filter_start)
+            filtered = filtered[filtered["date"] >= start_ts]
         if filter_end:
-            filtered = filtered[filtered["date"].dt.date <= filter_end]
+            end_ts = pd.Timestamp(filter_end)
+            filtered = filtered[filtered["date"] <= end_ts]
         if filter_users:
             normalized = filtered["assigned_to"].replace({"": "(unassigned)"})
             filtered = filtered[normalized.isin(filter_users)]
         if future_only:
-            filtered = filtered[filtered["date"].dt.date >= date.today()]
+            today_ts = pd.Timestamp(date.today())
+            filtered = filtered[filtered["date"] >= today_ts]
 
         if filtered.empty:
             st.info("No assignments match the selected filters.")
