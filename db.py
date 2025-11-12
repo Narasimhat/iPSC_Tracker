@@ -341,10 +341,10 @@ def insert_log(conn, payload: Dict[str, Any]) -> int:
         "created_at",
     ]
     values = [payload.get(c) for c in cols]
-    sql = f"INSERT INTO logs ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))})"
+    placeholders = ", ".join(["%s"] * len(cols))
+    sql = f"INSERT INTO logs ({', '.join(cols)}) VALUES ({placeholders}) RETURNING id"
     with closing(conn.cursor()) as cur:
         cur.execute(sql, values)
-        cur.execute("SELECT LAST_INSERT_ID()")
         row = cur.fetchone()
         return int(row[0]) if row else -1
 
