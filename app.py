@@ -283,7 +283,15 @@ with tab_add:
                 operator = st.text_input("Operator *", placeholder="Your name")
         with sched_col2:
             log_date = st.date_input("Date *", value=date.today())
+        default_nad = None
+        if template_cfg.get("next_action_days") is not None:
+            default_nad = date.today() + timedelta(days=template_cfg["next_action_days"])
+        elif EVENT_FOLLOWUP_DEFAULTS.get(event_type) is not None:
+            default_nad = date.today() + timedelta(days=EVENT_FOLLOWUP_DEFAULTS[event_type])
+
         with sched_col3:
+            next_action_date = st.date_input("Next Action Date", value=default_nad)
+        with sched_col4:
             all_users = []
             try:
                 with get_conn() as _c:
@@ -292,10 +300,10 @@ with tab_add:
             except Exception:
                 all_users = []
             assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
-            assign_index = 0
             weekend_autofill = None
             if next_action_date:
                 weekend_autofill = get_weekend_assignment_for_date(conn, next_action_date)
+            assign_index = 0
             if weekend_autofill and weekend_autofill in assigned_options:
                 assign_index = assigned_options.index(weekend_autofill)
             elif st.session_state.get("my_name") and st.session_state["my_name"] in assigned_options:
@@ -303,13 +311,6 @@ with tab_add:
             assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index)
             if weekend_autofill:
                 st.caption(f"Weekend duty auto-selected: {weekend_autofill}")
-        with sched_col4:
-            default_nad = None
-            if template_cfg.get("next_action_days") is not None:
-                default_nad = date.today() + timedelta(days=template_cfg["next_action_days"])
-            elif EVENT_FOLLOWUP_DEFAULTS.get(event_type) is not None:
-                default_nad = date.today() + timedelta(days=EVENT_FOLLOWUP_DEFAULTS[event_type])
-            next_action_date = st.date_input("Next Action Date", value=default_nad)
         with sched_col5:
             st.empty()
         thaw_preview = ""
@@ -680,6 +681,21 @@ with tab_dashboard:
         stats[0].metric("Logs today", int(len(logs_today)), delta=int(len(logs_today) - len(logs_yesterday)))
         stats[1].metric("Active cell lines (7d)", int(active_cell_lines))
         stats[2].metric("Overdue actions", overdue_total)
+
+        upcoming_weekend = date.today() + timedelta((5 - date.today().weekday()) % 7)
+        weekend_dates = [upcoming_weekend, upcoming_weekend + timedelta(days=1)]
+        coverage = []
+        for d in weekend_dates:
+            coverage.append(
+                {
+                    "date": d,
+                    "assignee": get_weekend_assignment_for_date(conn, d),
+                }
+            )
+        coverage_lines = "\n".join(
+            f"{item['date'].strftime('%a %b %d')}: {item['assignee'] or 'Unassigned'}" for item in coverage
+        )
+        st.info(f"Upcoming weekend coverage:\n{coverage_lines}", icon="🗓️")
 
         view_df = df_all.copy()
         if dash_only_mine:
