@@ -90,6 +90,12 @@ try:
     _usernames_all = [r[0] for r in _rows_users]
 except Exception:
     _usernames_all = []
+try:
+    _rows_colors = conn.execute("SELECT username, COALESCE(color_hex, '') FROM users").fetchall()
+    _user_colors = {r[0]: (r[1] or "#4a90e2") for r in _rows_colors}
+except Exception:
+    _user_colors = {}
+DEFAULT_USER_COLOR = "#4a90e2"
 my_name = st.selectbox("My name", options=["(none)"] + _usernames_all if _usernames_all else ["(none)"], index=0, help="Used for 'Assigned to me' filters")
 st.session_state["my_name"] = None if my_name == "(none)" else my_name
 
@@ -481,6 +487,7 @@ with tab_history:
         pretty = df.sort_values(by=["date", "created_at"], ascending=False, ignore_index=True)[["id"] + display_cols]
         pretty["date"] = pd.to_datetime(pretty["date"], errors="coerce")
         pretty["next_action_date"] = pd.to_datetime(pretty["next_action_date"], errors="coerce")
+        pretty["assigned_color"] = pretty["assigned_to"].apply(lambda x: _user_colors.get(str(x), DEFAULT_USER_COLOR))
         history_display = pretty.rename(columns={
             "id": "ID",
             "date": "Date",
@@ -499,6 +506,7 @@ with tab_history:
             "assigned_to": "Assigned To",
             "next_action_date": "Next Action Date",
             "created_by": "Created By",
+            "assigned_color": "Assigned Color",
         })
         edited_history = st.data_editor(
             history_display,
@@ -509,6 +517,7 @@ with tab_history:
                 "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
                 "Passage": st.column_config.NumberColumn(step=1),
                 "Volume (mL)": st.column_config.NumberColumn(step=0.5),
+                "Assigned Color": st.column_config.ColorColumn(disabled=True),
             },
             hide_index=True,
             use_container_width=True,
@@ -859,6 +868,7 @@ with tab_run:
                     "next_action_date":"Next Action",
                     "notes":"Notes",
                 })
+                run_cols_display["Assigned Color"] = run_cols_display["Assigned To"].apply(lambda x: _user_colors.get(str(x), DEFAULT_USER_COLOR))
                 edited = st.data_editor(
                     run_cols_display,
                     column_config={
@@ -874,6 +884,7 @@ with tab_run:
                         "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
                         "Next Action": st.column_config.DateColumn(),
                         "Notes": st.column_config.TextColumn(),
+                        "Assigned Color": st.column_config.ColorColumn(disabled=True),
                     },
                     hide_index=True,
                     use_container_width=True,
