@@ -27,6 +27,10 @@ from db import (
     get_last_log_for_line_event,
     get_recent_logs_for_cell_line,
     get_last_thaw_id,
+    get_weekend_schedule,
+    upsert_weekend_assignment,
+    delete_weekend_assignment,
+    get_weekend_assignment_for_date,
     get_or_create_user,
     delete_user,
     IMAGES_DIR,
@@ -88,12 +92,13 @@ except Exception:
 my_name = st.selectbox("My name", options=["(none)"] + _usernames_all if _usernames_all else ["(none)"], index=0, help="Used for 'Assigned to me' filters")
 st.session_state["my_name"] = None if my_name == "(none)" else my_name
 
-tab_add, tab_history, tab_thaw, tab_dashboard, tab_run, tab_settings = st.tabs([
+tab_add, tab_history, tab_thaw, tab_dashboard, tab_run, tab_scheduler, tab_settings = st.tabs([
     "Add Entry",
     "History",
     "Thaw Timeline",
     "Dashboard",
     "Weekend Run Sheet",
+    "Weekend Scheduler",
     "Settings",
 ])
 
@@ -288,9 +293,16 @@ with tab_add:
                 all_users = []
             assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
             assign_index = 0
-            if st.session_state.get("my_name") and st.session_state["my_name"] in assigned_options:
+            weekend_autofill = None
+            if next_action_date:
+                weekend_autofill = get_weekend_assignment_for_date(conn, next_action_date)
+            if weekend_autofill and weekend_autofill in assigned_options:
+                assign_index = assigned_options.index(weekend_autofill)
+            elif st.session_state.get("my_name") and st.session_state["my_name"] in assigned_options:
                 assign_index = assigned_options.index(st.session_state["my_name"])
             assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index)
+            if weekend_autofill:
+                st.caption(f"Weekend duty auto-selected: {weekend_autofill}")
         with sched_col4:
             default_nad = None
             if template_cfg.get("next_action_days") is not None:
@@ -361,6 +373,14 @@ with tab_add:
             if event_type == "Split" and split_auto:
                 final_passage = split_auto
 
+            resolved_assignee = None if assigned_to in (None, "(unassigned)") else assigned_to
+            auto_assignee_note = None
+            if (not resolved_assignee) and next_action_date:
+                weekend_owner = get_weekend_assignment_for_date(conn, next_action_date)
+                if weekend_owner:
+                    resolved_assignee = weekend_owner
+                    auto_assignee_note = weekend_owner
+
             payload = {
                 "date": log_date.isoformat(),
                 "cell_line": cell_line,
@@ -376,13 +396,15 @@ with tab_add:
                 "thaw_id": thaw_id_val,
                 "cryo_vial_position": cryo_vial_position,
                 "image_path": None,
-                "assigned_to": None if assigned_to in (None, "(unassigned)") else assigned_to,
+                "assigned_to": resolved_assignee,
                 "next_action_date": next_action_date.isoformat() if next_action_date else None,
                 "created_by": operator,
                 "created_at": datetime.utcnow().isoformat(),
             }
             insert_log(conn, payload)
             st.success("✅ Log entry saved to database!")
+            if auto_assignee_note:
+                st.info(f"Assigned to weekend duty: {auto_assignee_note}")
 
 with tab_history:
     st.subheader("📜 Culture History")
@@ -538,6 +560,51 @@ with tab_history:
                 st.error(f"Failed to save history updates: {exc}")
         csv = edited_history.to_csv(index=False).encode('utf-8')
         st.download_button("📂 Download CSV", data=csv, file_name="ipsc_culture_log.csv", mime="text/csv")
+
+        st.markdown("---")
+        with st.expander("📓 Lab book export"):
+            export_date = st.date_input("Day to summarize", value=date.today(), key="lab_book_date")
+            operator_opts = ["(any)"] + _usernames_all if _usernames_all else ["(any)"]
+            export_operator = st.selectbox("Operator filter", operator_opts, key="lab_book_operator")
+            export_logs = query_logs(conn, start_date=export_date, end_date=export_date)
+            if not export_logs:
+                st.info("No entries for that date.")
+            else:
+                export_df = pd.DataFrame(export_logs)
+                if export_operator != "(any)":
+                    export_df = export_df[export_df.get("operator") == export_operator]
+                if export_df.empty:
+                    st.info("No entries match the selected operator.")
+                else:
+                    export_df["_nad"] = pd.to_datetime(export_df.get("next_action_date"), errors="coerce")
+                    done_df = export_df[export_df["_nad"].isna()].copy()
+                    if done_df.empty:
+                        st.info("Nothing marked done for that day.")
+                    else:
+                        done_df["_created"] = pd.to_datetime(done_df.get("created_at"), errors="coerce")
+                        done_df = done_df.sort_values(["_created", "date"], ascending=True)
+                        lines = []
+                        for _, row in done_df.iterrows():
+                            line = f"- {row.get('cell_line','?')} • {row.get('event_type','?')}"
+                            if row.get("passage"):
+                                line += f" (P{row.get('passage')})"
+                            if row.get("location"):
+                                line += f" @ {row.get('location')}"
+                            if row.get("medium"):
+                                line += f" | {row.get('medium')}"
+                            line += f" — by {row.get('operator') or 'unknown'}"
+                            if row.get("notes"):
+                                line += f" | Notes: {row.get('notes')}"
+                            lines.append(line)
+                        lab_text = "\n".join(lines)
+                        st.caption("Copy the summary below into the lab book:")
+                        st.code(lab_text or "(no entries)", language="markdown")
+                        st.download_button(
+                            "Download lab book text",
+                            data=(lab_text or "").encode("utf-8"),
+                            file_name=f"lab_book_{export_date.isoformat()}.txt",
+                            mime="text/plain",
+                        )
     else:
         st.info("No entries yet — add your first log in Add Entry tab.")
 
@@ -834,6 +901,134 @@ with tab_run:
                         .sort_values("Total Volume (mL)", ascending=False)
                     )
                     st.dataframe(media_summary, use_container_width=True)
+
+with tab_scheduler:
+    st.subheader("📆 Weekend Duty Scheduler")
+    upcoming_saturday = date.today() + timedelta((5 - date.today().weekday()) % 7)
+    sched_col1, sched_col2 = st.columns(2)
+    with sched_col1:
+        range_start = st.date_input("From (Saturday)", value=upcoming_saturday, key="sched_start")
+    with sched_col2:
+        range_end = st.date_input("To (Sunday)", value=upcoming_saturday + timedelta(days=1), key="sched_end")
+    if range_end < range_start:
+        st.warning("End date cannot be before start date.")
+    duty_dates = [(range_start + timedelta(days=i)).isoformat() for i in range((range_end - range_start).days + 1)]
+    sched_col3, _ = st.columns([1, 1])
+    with sched_col3:
+        sched_user = st.selectbox(
+            "Assign operator",
+            options=["(none)"] + _usernames_all if _usernames_all else ["(none)"],
+            key="sched_user",
+        )
+    save_col, delete_col = st.columns(2)
+    with save_col:
+        if st.button("Save weekend assignment", key="sched_save"):
+            if duty_dates:
+                upsert_weekend_assignment(
+                    conn,
+                    duty_dates,
+                    None if sched_user in (None, "(none)") else sched_user,
+                    None,
+                )
+                st.success(f"Assigned {len(duty_dates)} date(s).")
+            else:
+                st.error("Pick a weekend date.")
+    with delete_col:
+        if st.button("Remove assignment", key="sched_delete"):
+            if duty_dates:
+                for d in duty_dates:
+                    delete_weekend_assignment(conn, d)
+                st.success("Selected weekends cleared.")
+            else:
+                st.error("Pick a weekend date to remove.")
+
+    schedule_rows = get_weekend_schedule(conn)
+    if schedule_rows:
+        sched_df = pd.DataFrame(schedule_rows)
+        sched_df["date"] = pd.to_datetime(sched_df["date"], errors="coerce")
+        sched_df = sched_df.dropna(subset=["date"]).sort_values("date")
+        sched_df["assigned_to"] = sched_df["assigned_to"].fillna("")
+
+        filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+        with filter_col1:
+            default_view_start = date.today() - timedelta(days=7)
+            filter_start = st.date_input("View from", value=default_view_start, key="sched_filter_start")
+        with filter_col2:
+            filter_end = st.date_input("Through", value=date.today() + timedelta(days=28), key="sched_filter_end")
+        with filter_col3:
+            filter_users = st.multiselect(
+                "Operators",
+                options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"],
+                key="sched_filter_users",
+            )
+        with filter_col4:
+            future_only = st.checkbox("Future only", value=False, key="sched_filter_future")
+
+        filtered = sched_df.copy()
+        if filter_start:
+            filtered = filtered[filtered["date"].dt.date >= filter_start]
+        if filter_end:
+            filtered = filtered[filtered["date"].dt.date <= filter_end]
+        if filter_users:
+            normalized = filtered["assigned_to"].replace({"": "(unassigned)"})
+            filtered = filtered[normalized.isin(filter_users)]
+        if future_only:
+            filtered = filtered[filtered["date"].dt.date >= date.today()]
+
+        if filtered.empty:
+            st.info("No assignments match the selected filters.")
+        else:
+            base_lookup = {row["date"].date(): row for _, row in sched_df.iterrows()}
+            editor_df = filtered.copy()
+            editor_df["Weekend"] = pd.to_datetime(editor_df["date"])
+            editor_df["Assigned To"] = editor_df["assigned_to"].replace({"": "(unassigned)"})
+            editor_df["Updated"] = pd.to_datetime(editor_df["updated_at"], errors="coerce")
+            editor_df["Remove"] = False
+            editor_view = editor_df[["Weekend", "Assigned To", "Updated", "Remove"]]
+
+            st.markdown("#### Coverage calendar")
+            edited_sched = st.data_editor(
+                editor_view,
+                column_config={
+                    "Weekend": st.column_config.DateColumn(disabled=True),
+                    "Assigned To": st.column_config.SelectboxColumn(
+                        options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]
+                    ),
+                    "Updated": st.column_config.DatetimeColumn(disabled=True),
+                    "Remove": st.column_config.CheckboxColumn(),
+                },
+                hide_index=True,
+                key="sched_editor",
+                use_container_width=True,
+            )
+            st.caption("Update assignments inline, mark rows for removal, then save.")
+            if st.button("Save scheduler changes", key="sched_editor_save"):
+                try:
+                    with conn:
+                        for _, row in edited_sched.iterrows():
+                            raw_date = row["Weekend"]
+                            if pd.isna(raw_date):
+                                continue
+                            day = raw_date.date() if isinstance(raw_date, pd.Timestamp) else raw_date
+                            date_key = day.isoformat()
+                            if row.get("Remove"):
+                                delete_weekend_assignment(conn, date_key)
+                                continue
+                            new_assignee = row["Assigned To"]
+                            normalized_assignee = None if new_assignee in (None, "", "(unassigned)") else new_assignee
+                            orig = base_lookup.get(day, {})
+                            if orig.get("assigned_to") != normalized_assignee:
+                                upsert_weekend_assignment(
+                                    conn,
+                                    [date_key],
+                                    normalized_assignee,
+                                    orig.get("notes"),
+                                )
+                    st.success("Scheduler updated.")
+                except Exception as exc:
+                    st.error(f"Failed to save scheduler changes: {exc}")
+    else:
+        st.info("No weekend assignments yet — add one above.")
 
 with tab_settings:
     st.subheader("⚙️ Settings (Reference Lists)")
