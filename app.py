@@ -33,6 +33,7 @@ from db import (
     get_weekend_assignment_for_date,
     get_or_create_user,
     delete_user,
+    update_user_color,
     IMAGES_DIR,
 )
 
@@ -1126,13 +1127,16 @@ with tab_settings:
     else:
         # Operators management
         try:
-            _urows = conn.execute("SELECT username, COALESCE(display_name, username) FROM users ORDER BY username").fetchall()
-            ops = [(r[0], r[1]) for r in _urows]
+            _urows = conn.execute(
+                "SELECT username, COALESCE(display_name, username), COALESCE(color_hex, '') FROM users ORDER BY username"
+            ).fetchall()
+            ops = [(r[0], r[1], r[2]) for r in _urows]
         except Exception:
             ops = []
         st.write(f"Current Operators ({len(ops)}):")
         if ops:
-            st.dataframe(pd.DataFrame(ops, columns=["Username","Display Name"]), width='stretch')
+            df_ops = pd.DataFrame(ops, columns=["Username", "Display Name", "Color"])
+            st.dataframe(df_ops, width='stretch')
         else:
             st.info("No operators yet.")
 
@@ -1140,12 +1144,29 @@ with tab_settings:
         st.markdown("### Add Operator")
         new_username = st.text_input("Username", key="new_operator_username")
         new_display = st.text_input("Display name (optional)", key="new_operator_display")
+        new_color = st.color_picker("Color code", value="#4a90e2", key="new_operator_color")
         if st.button("Add Operator", key="btn_add_operator"):
             if not new_username or not new_username.strip():
                 st.warning("Enter a username.")
             else:
-                get_or_create_user(conn, new_username.strip(), new_display.strip() if new_display else None)
+                get_or_create_user(
+                    conn,
+                    new_username.strip(),
+                    new_display.strip() if new_display else None,
+                    new_color,
+                )
                 st.success("Operator added.")
+                st.rerun()
+
+        if ops:
+            st.markdown("### Update Operator Color")
+            color_map = {row[0]: (row[2] or "#4a90e2") for row in ops}
+            color_user = st.selectbox("Operator", options=list(color_map.keys()), key="color_operator_select")
+            current_color = color_map.get(color_user, "#4a90e2")
+            updated_color = st.color_picker("Color", value=current_color, key="color_operator_value")
+            if st.button("Save color", key="btn_update_color"):
+                update_user_color(conn, color_user, updated_color)
+                st.success("Color updated.")
                 st.rerun()
 
         st.markdown("### Delete Operator")

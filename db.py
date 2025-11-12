@@ -37,6 +37,7 @@ def init_db(conn: sqlite3.Connection) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 display_name TEXT,
+                color_hex TEXT,
                 created_at TEXT NOT NULL
             )
             """
@@ -140,6 +141,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             cur.execute("ALTER TABLE logs ADD COLUMN volume REAL")
         conn.commit()
 
+        # Ensure color column on users table
+        cur.execute("PRAGMA table_info(users)")
+        user_cols = {row[1] for row in cur.fetchall()}
+        if "color_hex" not in user_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN color_hex TEXT")
+            conn.commit()
+
     # Seed default event types if empty
     with closing(conn.cursor()) as cur:
         cur.execute("SELECT COUNT(*) FROM event_types")
@@ -187,7 +195,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.commit()
 
 
-def get_or_create_user(conn: sqlite3.Connection, username: str, display_name: Optional[str] = None) -> Dict[str, Any]:
+def get_or_create_user(
+    conn: sqlite3.Connection,
+    username: str,
+    display_name: Optional[str] = None,
+    color_hex: Optional[str] = None,
+) -> Dict[str, Any]:
     username = username.strip()
     if not username:
         raise ValueError("Username required")
@@ -195,16 +208,22 @@ def get_or_create_user(conn: sqlite3.Connection, username: str, display_name: Op
         cur.execute("SELECT * FROM users WHERE username = ?", (username,))
         row = cur.fetchone()
         if row:
+            if color_hex and row["color_hex"] != color_hex:
+                cur.execute("UPDATE users SET color_hex = ? WHERE username = ?", (color_hex, username))
+                conn.commit()
+                cur.execute("SELECT * FROM users WHERE username = ?", (username,))
+                row = cur.fetchone()
             return dict(row)
         cur.execute(
-            "INSERT INTO users (username, display_name, created_at) VALUES (?, ?, ?)",
-            (username, display_name or username, datetime.utcnow().isoformat()),
+            "INSERT INTO users (username, display_name, color_hex, created_at) VALUES (?, ?, ?, ?)",
+            (username, display_name or username, color_hex, datetime.utcnow().isoformat()),
         )
         conn.commit()
         return {
             "id": cur.lastrowid,
             "username": username,
             "display_name": display_name or username,
+            "color_hex": color_hex,
             "created_at": datetime.utcnow().isoformat(),
         }
 
@@ -215,6 +234,15 @@ def delete_user(conn: sqlite3.Connection, username: str) -> None:
         return
     with closing(conn.cursor()) as cur:
         cur.execute("DELETE FROM users WHERE username = ?", (username,))
+        conn.commit()
+
+
+def update_user_color(conn: sqlite3.Connection, username: str, color_hex: Optional[str]) -> None:
+    username = username.strip()
+    if not username:
+        return
+    with closing(conn.cursor()) as cur:
+        cur.execute("UPDATE users SET color_hex = ? WHERE username = ?", (color_hex, username))
         conn.commit()
 
 
