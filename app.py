@@ -890,60 +890,61 @@ with tab_run:
             df_tasks = df_tasks[df_tasks["next_action_date"].dt.date == (today_dt + pd.Timedelta(days=1)).date()]
         elif date_filter == "Today + Tomorrow":
             df_tasks = df_tasks[df_tasks["next_action_date"].dt.date.isin({today_dt.date(), (today_dt + pd.Timedelta(days=1)).date()})]
-            if df_tasks.empty:
-                st.success("No upcoming tasks assigned to you.")
-            else:
-                df_tasks["days_to_due"] = (df_tasks["next_action_date"] - today_dt).dt.days
-                df_tasks = df_tasks.sort_values(by="next_action_date")
-                df_tasks["Location"] = df_tasks["location"].fillna("")
-                df_tasks["Medium"] = df_tasks["medium"].fillna("")
-                df_tasks["done"] = df_tasks["next_action_date"].dt.date < today_dt.date()
-                run_cols_display = df_tasks[["id","cell_line","event_type","done","vessel","Location","Medium","cell_type","volume","assigned_to","next_action_date","notes"]].rename(columns={
-                    "id":"ID",
-                    "cell_line":"Cell Line",
-                    "event_type":"Event",
-                    "done":"Mark Done",
-                    "vessel":"Vessel",
-                    "cell_type":"Cell Type",
-                    "volume":"Volume (mL)",
-                    "assigned_to":"Assigned To",
-                    "next_action_date":"Next Action",
-                    "notes":"Notes",
-                })
-                run_cols_display["Assigned Color"] = run_cols_display["Assigned To"].apply(lambda x: _user_colors.get(str(x), DEFAULT_USER_COLOR))
-                color_series_run = run_cols_display.set_index("ID")["Assigned Color"]
-                run_view = run_cols_display.drop(columns=["Assigned Color"]).set_index("ID")
-                styled_run = run_view.style.apply(
-                    lambda row: [f"background-color: {_with_alpha(color_series_run.loc[row.name], '22')};"] * len(row),
-                    axis=1,
-                )
-                st.dataframe(styled_run, use_container_width=True)
 
-                with st.expander("Edit run sheet rows"):
-                    edited = st.data_editor(
-                        run_cols_display.drop(columns=["Assigned Color"]),
-                        column_config={
-                            "ID": st.column_config.Column(disabled=True),
-                            "Cell Line": st.column_config.Column(disabled=True),
-                            "Event": st.column_config.Column(disabled=True),
-                            "Mark Done": st.column_config.CheckboxColumn(),
-                            "Vessel": st.column_config.Column(disabled=False),
-                            "Location": st.column_config.Column(disabled=False),
-                            "Medium": st.column_config.Column(disabled=False),
-                            "Cell Type": st.column_config.Column(disabled=False),
-                            "Volume (mL)": st.column_config.Column(disabled=False),
-                            "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
-                            "Next Action": st.column_config.DateColumn(),
-                            "Notes": st.column_config.TextColumn(),
-                        },
-                        hide_index=True,
-                        use_container_width=True,
-                    )
-                    st.caption("Edit fields inline and click 'Save updates' to record changes.")
-                    if st.button("Save updates", key="save_run_sheet"):
-                        # Compare edited vs original to detect changes
-                        changes = []
-                        for _, row in edited.iterrows():
+        if df_tasks.empty:
+            st.info("No tasks match the selected filters.")
+        else:
+            df_tasks["days_to_due"] = (df_tasks["next_action_date"] - today_dt).dt.days
+            df_tasks = df_tasks.sort_values(by="next_action_date")
+            df_tasks["Location"] = df_tasks["location"].fillna("")
+            df_tasks["Medium"] = df_tasks["medium"].fillna("")
+            df_tasks["done"] = df_tasks["next_action_date"].dt.date < today_dt.date()
+            run_cols_display = df_tasks[["id","cell_line","event_type","done","vessel","Location","Medium","cell_type","volume","assigned_to","next_action_date","notes"]].rename(columns={
+                "id":"ID",
+                "cell_line":"Cell Line",
+                "event_type":"Event",
+                "done":"Mark Done",
+                "vessel":"Vessel",
+                "cell_type":"Cell Type",
+                "volume":"Volume (mL)",
+                "assigned_to":"Assigned To",
+                "next_action_date":"Next Action",
+                "notes":"Notes",
+            })
+            run_cols_display["Assigned Color"] = run_cols_display["Assigned To"].apply(lambda x: _user_colors.get(str(x), DEFAULT_USER_COLOR))
+            color_series_run = run_cols_display.set_index("ID")["Assigned Color"]
+            run_view = run_cols_display.drop(columns=["Assigned Color"]).set_index("ID")
+            styled_run = run_view.style.apply(
+                lambda row: [f"background-color: {_with_alpha(color_series_run.loc[row.name], '22')};"] * len(row),
+                axis=1,
+            )
+            st.dataframe(styled_run, use_container_width=True)
+
+            with st.expander("Edit run sheet rows"):
+                edited = st.data_editor(
+                    run_cols_display.drop(columns=["Assigned Color"]),
+                    column_config={
+                        "ID": st.column_config.Column(disabled=True),
+                        "Cell Line": st.column_config.Column(disabled=True),
+                        "Event": st.column_config.Column(disabled=True),
+                        "Mark Done": st.column_config.CheckboxColumn(),
+                        "Vessel": st.column_config.Column(disabled=False),
+                        "Location": st.column_config.Column(disabled=False),
+                        "Medium": st.column_config.Column(disabled=False),
+                        "Cell Type": st.column_config.Column(disabled=False),
+                        "Volume (mL)": st.column_config.Column(disabled=False),
+                        "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
+                        "Next Action": st.column_config.DateColumn(),
+                        "Notes": st.column_config.TextColumn(),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                st.caption("Edit fields inline and click 'Save updates' to record changes.")
+                if st.button("Save updates", key="save_run_sheet"):
+                    # Compare edited vs original to detect changes
+                    changes = []
+                    for _, row in edited.iterrows():
                             orig = df_tasks[df_tasks["id"] == row["ID"]].iloc[0]
                             payload = {}
                             if orig.get("location","") != row["Location"]:
@@ -965,21 +966,21 @@ with tab_run:
                             if payload:
                                 payload["id"] = row["ID"]
                                 changes.append(payload)
-                        if not changes:
-                            st.info("No changes to save.")
-                        else:
-                            try:
-                                with conn:
-                                    for change in changes:
-                                        fields = [f"{k} = ?" for k in change.keys() if k != "id"]
-                                        values = [change[k] for k in change.keys() if k != "id"]
-                                        conn.execute(
-                                            f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
-                                            values + [change["id"]],
-                                        )
-                                st.success("Updates saved.")
-                            except Exception as exc:
-                                st.error(f"Failed to save: {exc}")
+                    if not changes:
+                        st.info("No changes to save.")
+                    else:
+                        try:
+                            with conn:
+                                for change in changes:
+                                    fields = [f"{k} = ?" for k in change.keys() if k != "id"]
+                                    values = [change[k] for k in change.keys() if k != "id"]
+                                    conn.execute(
+                                        f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
+                                        values + [change["id"]],
+                                    )
+                            st.success("Updates saved.")
+                        except Exception as exc:
+                            st.error(f"Failed to save: {exc}")
 
                 st.markdown("#### Media prep summary (total volume)")
                 if edited.empty:
