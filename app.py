@@ -890,10 +890,20 @@ with tab_run:
     if df_tasks.empty:
         st.info("No tasks yet.")
     else:
-        if "assigned_to" not in df_tasks.columns:
-            df_tasks["assigned_to"] = ""
-        if "next_action_date" not in df_tasks.columns:
-            df_tasks["next_action_date"] = None
+        ensure_cols = {
+            "assigned_to": "",
+            "next_action_date": None,
+            "medium": "",
+            "location": "",
+            "event_type": "",
+            "cell_type": "",
+            "vessel": "",
+            "volume": 0.0,
+            "notes": "",
+        }
+        for col_name, default in ensure_cols.items():
+            if col_name not in df_tasks.columns:
+                df_tasks[col_name] = default
         df_tasks["next_action_date"] = pd.to_datetime(df_tasks["next_action_date"], errors="coerce")
         today_start = pd.Timestamp(date.today())
         tomorrow_start = today_start + pd.Timedelta(days=1)
