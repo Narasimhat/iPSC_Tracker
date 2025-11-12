@@ -1,6 +1,6 @@
 # iPSC Culture Tracker (Streamlit)
 
-Team-ready LIMS-style app to log iPSC culture events with images, track thaw-linked timelines, assign next actions, and export CSV. Uses SQLite for persistence and stores uploaded images on disk.
+Team-ready LIMS-style app to log iPSC culture events with images, track thaw-linked timelines, assign next actions, and export CSV. Culture logs, reference data, and weekend schedules now live in Snowflake; uploaded images still reside on disk (or your Streamlit Cloud scratch space).
 
 ## Features
 - Add Entry: form with Cell Line, Event, Passage, Vessel, Location, Culture Medium, Cell Type, Volume (mL), Notes, Operator, optional image; auto Thaw IDs for Thawing events; link other events to an existing Thaw ID
@@ -10,6 +10,33 @@ Team-ready LIMS-style app to log iPSC culture events with images, track thaw-lin
 - Dashboard: Upcoming/Overdue using Next Action Date; “Assigned to me” filter
 - Settings: manage reference lists (Cell Lines, Event Types, Vessels, Locations, Cell Types, Culture Media), Operators (add/delete), and create backups
 
+## Snowflake configuration
+
+The app expects Snowflake credentials via environment variables or Streamlit secrets. Minimum keys: `account`, `user`, `password`, `warehouse`, `database`, `schema` (optional: `role`). Examples:
+
+**Environment variables**
+```
+export SNOWFLAKE_ACCOUNT=xy12345.us-east-1
+export SNOWFLAKE_USER=ntelugu
+export SNOWFLAKE_PASSWORD=********
+export SNOWFLAKE_WAREHOUSE=IPSC_TRACKER_WH
+export SNOWFLAKE_DATABASE=IPSC_TRACKER_DB
+export SNOWFLAKE_SCHEMA=PUBLIC
+```
+
+**.streamlit/secrets.toml**
+```
+[snowflake]
+account = "xy12345.us-east-1"
+user = "ntelugu"
+password = "********"
+warehouse = "IPSC_TRACKER_WH"
+database = "IPSC_TRACKER_DB"
+schema = "PUBLIC"
+```
+
+`db.py` calls `init_db()` at startup and will create/adjust the Snowflake tables if they do not exist.
+
 ## Quick start (local)
 1) Create and activate a virtual environment
    - macOS/Linux (venv)
@@ -17,12 +44,14 @@ Team-ready LIMS-style app to log iPSC culture events with images, track thaw-lin
      - source .venv/bin/activate
 2) Install dependencies
    - pip install -r requirements.txt
-3) Run the app
+3) Configure Snowflake credentials (env vars or `.streamlit/secrets.toml`)
+4) Run the app
    - streamlit run app.py
    - If Safari cannot open the app, try http://localhost:8501 or run with: python -m streamlit run app.py --server.address=localhost --server.port=8501
 
 Data location
-- SQLite database: ipsc_tracker.db (ignored by Git by default)
+- Structured data: Snowflake (configured above)
+- SQLite file `ipsc_tracker.db`: only used for legacy backups (still ignored by Git)
 - Uploaded images: images/ (ignored by Git)
 - Backups: backups/ (ignored by Git)
 
@@ -52,25 +81,25 @@ Invite collaborators
    - python3 -m venv .venv
    - source .venv/bin/activate
    - pip install -r requirements.txt
-3) Run
+3) Add `SNOWFLAKE_*` env vars (or `.streamlit/secrets.toml`)
+4) Run
    - streamlit run app.py
 
 Notes
-- Each collaborator gets their own local SQLite DB and images unless you explicitly share those files outside Git.
-- To share a snapshot of your data, use Settings → Backup and send the folder to a teammate. They can replace their ipsc_tracker.db and images/ with your backup copies.
+- Everyone reads/writes the same Snowflake tables, so credentials control who can see/edit culture history.
+- Images/backups remain local; to share them, use Settings → Backup and send the bundle (images + optional sqlite snapshot) to your teammate.
 
-## Deploy for team (Render, persistent disk)
+## Deploy for team
 
-This keeps your SQLite database and uploaded images on a server disk so data persists across restarts.
+Whether you deploy on Streamlit Cloud, Render, or another platform, supply the same Snowflake credentials as secrets/environment variables. The existing `render.yaml` still works for Streamlit + disk-backed images; just add:
 
-1) Repo contains `render.yaml`. Go to https://dashboard.render.com → New → Blueprint → Connect this repo
-2) Confirm the service settings:
-   - Build: `pip install -r requirements.txt`
-   - Start: `streamlit run app.py --server.address 0.0.0.0 --server.port $PORT`
-   - Env vars: `PYTHON_VERSION=3.11`, `DATA_ROOT=/var/data`
-   - Disk: name `data`, mount `/var/data`, size ~2GB (adjust as needed)
-3) Deploy. Render will give you a public URL to share with your team.
+```
+SNOWFLAKE_ACCOUNT=...
+SNOWFLAKE_USER=...
+SNOWFLAKE_PASSWORD=...
+SNOWFLAKE_WAREHOUSE=...
+SNOWFLAKE_DATABASE=...
+SNOWFLAKE_SCHEMA=...
+```
 
-Limitations
-- SQLite is fine for small teams. For higher concurrency, consider migrating to Postgres (e.g., Supabase) and object storage for images.
-- To migrate later, we can refactor `db.py` to use Postgres and move images to a bucket while keeping the UI unchanged.
+Images remain on the server disk (`DATA_ROOT`), but the culture history lives in Snowflake so redeploys no longer wipe data.

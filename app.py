@@ -35,6 +35,10 @@ from db import (
     get_or_create_user,
     delete_user,
     update_user_color,
+    list_usernames,
+    list_users_with_colors,
+    update_log_fields,
+    bulk_update_logs,
     IMAGES_DIR,
 )
 
@@ -87,8 +91,7 @@ ensure_dirs()
 
 # Current user context (for 'Assigned to me' filters)
 try:
-    _rows_users = conn.execute("SELECT username FROM users ORDER BY username").fetchall()
-    _usernames_all = [r[0] for r in _rows_users]
+    _usernames_all = list_usernames(conn)
 except Exception:
     _usernames_all = []
 COLOR_PALETTE = [
@@ -106,19 +109,19 @@ COLOR_PALETTE = [
 DEFAULT_USER_COLOR = "#4a90e2"
 
 try:
-    _rows_colors = conn.execute("SELECT username, COALESCE(color_hex, '') FROM users ORDER BY username").fetchall()
+    _rows_colors = list_users_with_colors(conn)
     _user_colors = {}
     auto_idx = 0
-    for username, color_hex in _rows_colors:
-        norm_name = str(username).strip()
-        color_hex = (color_hex or "").strip()
+    for row in _rows_colors:
+        username = (row.get("username") or "").strip()
+        color_hex = (row.get("color_hex") or "").strip()
         if color_hex:
-            _user_colors[norm_name] = color_hex
+            _user_colors[username] = color_hex
         else:
             auto_color = COLOR_PALETTE[auto_idx % len(COLOR_PALETTE)]
             auto_idx += 1
             update_user_color(conn, username, auto_color)
-            _user_colors[norm_name] = auto_color
+            _user_colors[username] = auto_color
 except Exception:
     _user_colors = {}
 
@@ -333,8 +336,10 @@ with tab_add:
         st.divider()
         sched_col1, sched_col2, sched_col3, sched_col4, sched_col5 = st.columns([1, 1, 1, 1, 1])
         with sched_col1:
-            user_rows = conn.execute("SELECT username FROM users ORDER BY username").fetchall()
-            usernames = [r[0] for r in user_rows]
+            try:
+                usernames = list_usernames(conn)
+            except Exception:
+                usernames = []
             if usernames:
                 op_index = 0
                 if st.session_state.get("my_name") and st.session_state["my_name"] in usernames:
@@ -356,9 +361,7 @@ with tab_add:
         with sched_col4:
             all_users = []
             try:
-                with get_conn() as _c:
-                    rows = _c.execute("SELECT username FROM users ORDER BY username").fetchall()
-                    all_users = [r[0] for r in rows]
+                all_users = list_usernames(conn)
             except Exception:
                 all_users = []
             assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
@@ -590,52 +593,49 @@ with tab_history:
             )
             if st.button("Save history edits", key="save_history"):
                 try:
-                    with conn:
-                        base_lookup = history_display.set_index("ID")
-                        for _, row in edited_history.iterrows():
-                            row_id = row["ID"]
-                            original = base_lookup.loc[row_id]
-                            updates = {}
-                            for col, orig_col in [
-                                ("Date","date"),
-                                ("Cell Line","cell_line"),
-                                ("Event Type","event_type"),
-                                ("Passage","passage"),
-                                ("Vessel","vessel"),
-                                ("Location","location"),
-                                ("Culture Medium","medium"),
-                                ("Cell Type","cell_type"),
-                                ("Volume (mL)","volume"),
-                                ("Notes","notes"),
-                                ("Operator","operator"),
-                                ("Thaw ID","thaw_id"),
-                                ("Cryo Vial Position","cryo_vial_position"),
-                                ("Assigned To","assigned_to"),
-                                ("Next Action Date","next_action_date"),
-                            ]:
-                                val = row[col]
-                                if col in ("Assigned To",) and (val in (None,"(unassigned)")):
-                                    val = None
-                                if col in ("Date","Next Action Date") and pd.notna(val):
-                                    val = pd.to_datetime(val).date().isoformat()
-                                if col in ("Date","Next Action Date") and pd.isna(val):
-                                    val = None
-                                orig_val = original[col]
-                                if col in ("Date","Next Action Date") and isinstance(orig_val, pd.Timestamp):
-                                    orig_val = orig_val.date().isoformat()
-                                if orig_val != val:
-                                    updates[orig_col] = val
-                            mark_done_flag = bool(row.get("Mark Done"))
-                            orig_next = original["Next Action Date"]
-                            if mark_done_flag and pd.notna(orig_next):
-                                updates["next_action_date"] = None
-                            if updates:
-                                fields = [f"{k} = ?" for k in updates]
-                                values = [updates[k] for k in updates]
-                                conn.execute(
-                                    f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
-                                    values + [row_id],
-                                )
+                    base_lookup = history_display.set_index("ID")
+                    pending_updates = []
+                    for _, row in edited_history.iterrows():
+                        row_id = row["ID"]
+                        original = base_lookup.loc[row_id]
+                        updates = {}
+                        for col, orig_col in [
+                            ("Date","date"),
+                            ("Cell Line","cell_line"),
+                            ("Event Type","event_type"),
+                            ("Passage","passage"),
+                            ("Vessel","vessel"),
+                            ("Location","location"),
+                            ("Culture Medium","medium"),
+                            ("Cell Type","cell_type"),
+                            ("Volume (mL)","volume"),
+                            ("Notes","notes"),
+                            ("Operator","operator"),
+                            ("Thaw ID","thaw_id"),
+                            ("Cryo Vial Position","cryo_vial_position"),
+                            ("Assigned To","assigned_to"),
+                            ("Next Action Date","next_action_date"),
+                        ]:
+                            val = row[col]
+                            if col in ("Assigned To",) and (val in (None,"(unassigned)")):
+                                val = None
+                            if col in ("Date","Next Action Date") and pd.notna(val):
+                                val = pd.to_datetime(val).date().isoformat()
+                            if col in ("Date","Next Action Date") and pd.isna(val):
+                                val = None
+                            orig_val = original[col]
+                            if col in ("Date","Next Action Date") and isinstance(orig_val, pd.Timestamp):
+                                orig_val = orig_val.date().isoformat()
+                            if orig_val != val:
+                                updates[orig_col] = val
+                        mark_done_flag = bool(row.get("Mark Done"))
+                        orig_next = original["Next Action Date"]
+                        if mark_done_flag and pd.notna(orig_next):
+                            updates["next_action_date"] = None
+                        if updates:
+                            pending_updates.append((row_id, updates))
+                    for row_id, updates in pending_updates:
+                        update_log_fields(conn, int(row_id), updates)
                     st.success("History updated.")
                 except Exception as exc:
                     st.error(f"Failed to save history updates: {exc}")
@@ -1024,14 +1024,7 @@ with tab_run:
                         st.info("No changes to save.")
                     else:
                         try:
-                            with conn:
-                                for change in changes:
-                                    fields = [f"{k} = ?" for k in change.keys() if k != "id"]
-                                    values = [change[k] for k in change.keys() if k != "id"]
-                                    conn.execute(
-                                        f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
-                                        values + [change["id"]],
-                                    )
+                            bulk_update_logs(conn, changes)
                             st.success("Updates saved.")
                         except Exception as exc:
                             st.error(f"Failed to save: {exc}")
@@ -1152,26 +1145,25 @@ with tab_scheduler:
             st.caption("Update assignments inline, mark rows for removal, then save.")
             if st.button("Save scheduler changes", key="sched_editor_save"):
                 try:
-                    with conn:
-                        for _, row in edited_sched.iterrows():
-                            raw_date = row["Weekend"]
-                            if pd.isna(raw_date):
-                                continue
-                            day = raw_date.date() if isinstance(raw_date, pd.Timestamp) else raw_date
-                            date_key = day.isoformat()
-                            if row.get("Remove"):
-                                delete_weekend_assignment(conn, date_key)
-                                continue
-                            new_assignee = row["Assigned To"]
-                            normalized_assignee = None if new_assignee in (None, "", "(unassigned)") else new_assignee
-                            orig = base_lookup.get(day, {})
-                            if orig.get("assigned_to") != normalized_assignee:
-                                upsert_weekend_assignment(
-                                    conn,
-                                    [date_key],
-                                    normalized_assignee,
-                                    orig.get("notes"),
-                                )
+                    for _, row in edited_sched.iterrows():
+                        raw_date = row["Weekend"]
+                        if pd.isna(raw_date):
+                            continue
+                        day = raw_date.date() if isinstance(raw_date, pd.Timestamp) else raw_date
+                        date_key = day.isoformat()
+                        if row.get("Remove"):
+                            delete_weekend_assignment(conn, date_key)
+                            continue
+                        new_assignee = row["Assigned To"]
+                        normalized_assignee = None if new_assignee in (None, "", "(unassigned)") else new_assignee
+                        orig = base_lookup.get(day, {})
+                        if orig.get("assigned_to") != normalized_assignee:
+                            upsert_weekend_assignment(
+                                conn,
+                                [date_key],
+                                normalized_assignee,
+                                orig.get("notes"),
+                            )
                     st.success("Scheduler updated.")
                 except Exception as exc:
                     st.error(f"Failed to save scheduler changes: {exc}")
@@ -1243,10 +1235,16 @@ with tab_settings:
     else:
         # Operators management
         try:
-            _urows = conn.execute(
-                "SELECT username, COALESCE(display_name, username), COALESCE(color_hex, '') FROM users ORDER BY username"
-            ).fetchall()
-            ops = [(r[0], r[1], r[2]) for r in _urows]
+            ops_raw = list_users_with_colors(conn)
+            ops = [
+                (
+                    row.get("username"),
+                    row.get("display_name") or row.get("username"),
+                    row.get("color_hex") or "",
+                )
+                for row in ops_raw
+                if row.get("username")
+            ]
         except Exception:
             ops = []
         st.write(f"Current Operators ({len(ops)}):")
@@ -1287,8 +1285,7 @@ with tab_settings:
 
         st.markdown("### Delete Operator")
         try:
-            _urows2 = conn.execute("SELECT username FROM users ORDER BY username").fetchall()
-            ops2 = [r[0] for r in _urows2]
+            ops2 = list_usernames(conn)
         except Exception:
             ops2 = []
         if ops2:
