@@ -214,6 +214,9 @@ def get_or_create_user(conn, username: str, display_name: Optional[str] = None, 
     username = (username or "").strip()
     if not username:
         raise ValueError("Username required")
+    has_name_col = _table_has_column(conn, "USERS", "NAME")
+    has_initials_col = _table_has_column(conn, "USERS", "INITIALS")
+    has_is_active_col = _table_has_column(conn, "USERS", "IS_ACTIVE")
     with closing(_dict_cursor(conn)) as cur:
         cur.execute(
             "SELECT username, display_name, color_hex, created_at FROM users WHERE username = %s",
@@ -235,10 +238,22 @@ def get_or_create_user(conn, username: str, display_name: Optional[str] = None, 
                 "created_at": row.get("CREATED_AT") or row.get("created_at"),
             }
     created_at = datetime.utcnow()
+    columns = ["username", "display_name", "color_hex", "created_at"]
+    values: List[Any] = [username, display_name or username, color_hex, created_at]
+    if has_name_col:
+        columns.append("name")
+        values.append(display_name or username)
+    if has_initials_col:
+        columns.append("initials")
+        values.append((display_name or username)[:3])
+    if has_is_active_col:
+        columns.append("is_active")
+        values.append(True)
+    placeholders = ", ".join(["%s"] * len(columns))
     _execute(
         conn,
-        "INSERT INTO users (username, display_name, color_hex, created_at) VALUES (%s, %s, %s, %s)",
-        (username, display_name or username, color_hex, created_at),
+        f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})",
+        tuple(values),
     )
     return {
         "username": username,
