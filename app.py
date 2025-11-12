@@ -931,18 +931,12 @@ with tab_run:
 
         df_tasks = df_tasks[df_tasks["assigned_to"].apply(matches_assignee)]
 
-        media_filter = st.multiselect(
-            "Filter by medium",
-            options=sorted(df_tasks["medium"].dropna().unique()),
-        )
-        location_filter = st.multiselect(
-            "Filter by location",
-            options=sorted(df_tasks["location"].dropna().unique()),
-        )
-        event_filter = st.multiselect(
-            "Filter by event type",
-            options=sorted(df_tasks["event_type"].dropna().unique()),
-        )
+        media_options = sorted(df_tasks["medium"].dropna().unique()) if "medium" in df_tasks else []
+        location_options = sorted(df_tasks["location"].dropna().unique()) if "location" in df_tasks else []
+        event_options = sorted(df_tasks["event_type"].dropna().unique()) if "event_type" in df_tasks else []
+        media_filter = st.multiselect("Filter by medium", options=media_options)
+        location_filter = st.multiselect("Filter by location", options=location_options)
+        event_filter = st.multiselect("Filter by event type", options=event_options)
         date_filter = st.selectbox("Show", ["All", "Today", "Tomorrow", "Today + Tomorrow"])
         if media_filter:
             df_tasks = df_tasks[df_tasks["medium"].isin(media_filter)]
