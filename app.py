@@ -895,10 +895,12 @@ with tab_run:
         if "next_action_date" not in df_tasks.columns:
             df_tasks["next_action_date"] = None
         df_tasks["next_action_date"] = pd.to_datetime(df_tasks["next_action_date"], errors="coerce")
-        today_dt = pd.to_datetime(date.today())
+        today_start = pd.Timestamp(date.today())
+        tomorrow_start = today_start + pd.Timedelta(days=1)
+        day_after_tomorrow = tomorrow_start + pd.Timedelta(days=1)
         df_tasks = df_tasks[
             (~df_tasks["next_action_date"].isna())
-            & (df_tasks["next_action_date"].dt.date >= today_dt.date())
+            & (df_tasks["next_action_date"] >= today_start)
         ]
         my_user = st.session_state.get("my_name")
         default_assignee = my_user if my_user else "(any)"
@@ -939,20 +941,29 @@ with tab_run:
         if event_filter:
             df_tasks = df_tasks[df_tasks["event_type"].isin(event_filter)]
         if date_filter == "Today":
-            df_tasks = df_tasks[df_tasks["next_action_date"].dt.date == today_dt.date()]
+            df_tasks = df_tasks[
+                (df_tasks["next_action_date"] >= today_start)
+                & (df_tasks["next_action_date"] < tomorrow_start)
+            ]
         elif date_filter == "Tomorrow":
-            df_tasks = df_tasks[df_tasks["next_action_date"].dt.date == (today_dt + pd.Timedelta(days=1)).date()]
+            df_tasks = df_tasks[
+                (df_tasks["next_action_date"] >= tomorrow_start)
+                & (df_tasks["next_action_date"] < day_after_tomorrow)
+            ]
         elif date_filter == "Today + Tomorrow":
-            df_tasks = df_tasks[df_tasks["next_action_date"].dt.date.isin({today_dt.date(), (today_dt + pd.Timedelta(days=1)).date()})]
+            df_tasks = df_tasks[
+                (df_tasks["next_action_date"] >= today_start)
+                & (df_tasks["next_action_date"] < day_after_tomorrow)
+            ]
 
         if df_tasks.empty:
             st.info("No tasks match the selected filters.")
         else:
-            df_tasks["days_to_due"] = (df_tasks["next_action_date"] - today_dt).dt.days
+            df_tasks["days_to_due"] = (df_tasks["next_action_date"] - today_start).dt.days
             df_tasks = df_tasks.sort_values(by="next_action_date")
             df_tasks["Location"] = df_tasks["location"].fillna("")
             df_tasks["Medium"] = df_tasks["medium"].fillna("")
-            df_tasks["done"] = df_tasks["next_action_date"].dt.date < today_dt.date()
+            df_tasks["done"] = df_tasks["next_action_date"] < today_start
             run_cols_display = df_tasks[["id","cell_line","event_type","done","vessel","Location","Medium","cell_type","volume","assigned_to","next_action_date","notes"]].rename(columns={
                 "id":"ID",
                 "cell_line":"Cell Line",
@@ -1035,13 +1046,13 @@ with tab_run:
                 else:
                     summary_df = edited.copy()
                     summary_df["Volume (mL)"] = pd.to_numeric(summary_df["Volume (mL)"], errors="coerce").fillna(0.0)
-                    media_summary = (
-                        summary_df.groupby("Medium", as_index=False)["Volume (mL)"]
-                        .sum()
-                        .rename(columns={"Medium": "Media", "Volume (mL)": "Total Volume (mL)"})
-                        .sort_values("Total Volume (mL)", ascending=False)
-                    )
-                    st.dataframe(media_summary, use_container_width=True)
+            media_summary = (
+                summary_df.groupby("Medium", as_index=False)["Volume (mL)"]
+                .sum()
+                .rename(columns={"Medium": "Media", "Volume (mL)": "Total Volume (mL)"})
+                .sort_values("Total Volume (mL)", ascending=False)
+            )
+            st.dataframe(media_summary, use_container_width=True)
 
 with tab_scheduler:
     st.subheader("📆 Weekend Duty Scheduler")
