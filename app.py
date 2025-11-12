@@ -91,12 +91,43 @@ try:
     _usernames_all = [r[0] for r in _rows_users]
 except Exception:
     _usernames_all = []
+COLOR_PALETTE = [
+    "#4a90e2",
+    "#7ed321",
+    "#f5a623",
+    "#d0021b",
+    "#9013fe",
+    "#50e3c2",
+    "#b8e986",
+    "#f8e71c",
+    "#8b572a",
+    "#417505",
+]
+DEFAULT_USER_COLOR = "#4a90e2"
+
 try:
-    _rows_colors = conn.execute("SELECT username, COALESCE(color_hex, '') FROM users").fetchall()
-    _user_colors = {r[0]: (r[1] or "") for r in _rows_colors}
+    _rows_colors = conn.execute("SELECT username, COALESCE(color_hex, '') FROM users ORDER BY username").fetchall()
+    _user_colors = {}
+    auto_idx = 0
+    for username, color_hex in _rows_colors:
+        norm_name = str(username).strip()
+        color_hex = (color_hex or "").strip()
+        if color_hex:
+            _user_colors[norm_name] = color_hex
+        else:
+            auto_color = COLOR_PALETTE[auto_idx % len(COLOR_PALETTE)]
+            auto_idx += 1
+            update_user_color(conn, username, auto_color)
+            _user_colors[norm_name] = auto_color
 except Exception:
     _user_colors = {}
-DEFAULT_USER_COLOR = "#4a90e2"
+
+
+def _normalize_user(name: Optional[str]) -> Optional[str]:
+    if name is None:
+        return None
+    text = str(name).strip()
+    return text or None
 
 
 def _with_alpha(color: str, alpha: float = 0.25) -> str:
@@ -113,9 +144,10 @@ def _with_alpha(color: str, alpha: float = 0.25) -> str:
 
 
 def _color_for_user(username: Optional[str]) -> str:
-    if not username or username in ("", "(unassigned)"):
+    norm = _normalize_user(username)
+    if not norm or norm == "(unassigned)":
         return "#dcdcdc"
-    stored = _user_colors.get(username)
+    stored = _user_colors.get(norm)
     if stored and stored.strip():
         return stored.strip()
     return DEFAULT_USER_COLOR
