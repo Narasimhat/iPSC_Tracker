@@ -564,71 +564,81 @@ with tab_history:
             "assigned_color": "Assigned Color",
         })
         history_display["Mark Done"] = history_display["Next Action Date"].isna()
-        edited_history = st.data_editor(
-            history_display.drop(columns=["Assigned Color"]),
-            column_config={
-                "ID": st.column_config.Column(disabled=True),
-                "Date": st.column_config.DateColumn(),
-                "Next Action Date": st.column_config.DateColumn(),
-                "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
-                "Passage": st.column_config.NumberColumn(step=1),
-                "Volume (mL)": st.column_config.NumberColumn(step=0.5),
-                "Mark Done": st.column_config.CheckboxColumn(),
-            },
-            hide_index=True,
-            use_container_width=True,
+        history_display["Assigned Color"] = history_display["Assigned Color"].astype(str)
+        color_series = history_display.set_index("ID")["Assigned Color"]
+        history_view = history_display.drop(columns=["Assigned Color"]).set_index("ID")
+        styled_history = history_view.style.apply(
+            lambda row: [f"background-color: {_with_alpha(color_series.loc[row.name], 0.25)}"] * len(row),
+            axis=1,
         )
-        if st.button("Save history edits", key="save_history"):
-            try:
-                with conn:
-                    base_lookup = history_display.set_index("ID")
-                    for _, row in edited_history.iterrows():
-                        row_id = row["ID"]
-                        original = base_lookup.loc[row_id]
-                        updates = {}
-                        for col, orig_col in [
-                            ("Date","date"),
-                            ("Cell Line","cell_line"),
-                            ("Event Type","event_type"),
-                            ("Passage","passage"),
-                            ("Vessel","vessel"),
-                            ("Location","location"),
-                            ("Culture Medium","medium"),
-                            ("Cell Type","cell_type"),
-                            ("Volume (mL)","volume"),
-                            ("Notes","notes"),
-                            ("Operator","operator"),
-                            ("Thaw ID","thaw_id"),
-                            ("Cryo Vial Position","cryo_vial_position"),
-                            ("Assigned To","assigned_to"),
-                            ("Next Action Date","next_action_date"),
-                        ]:
-                            val = row[col]
-                            if col in ("Assigned To",) and (val in (None,"(unassigned)")):
-                                val = None
-                            if col in ("Date","Next Action Date") and pd.notna(val):
-                                val = pd.to_datetime(val).date().isoformat()
-                            if col in ("Date","Next Action Date") and pd.isna(val):
-                                val = None
-                            orig_val = original[col]
-                            if col in ("Date","Next Action Date") and isinstance(orig_val, pd.Timestamp):
-                                orig_val = orig_val.date().isoformat()
-                            if orig_val != val:
-                                updates[orig_col] = val
-                        mark_done_flag = bool(row.get("Mark Done"))
-                        orig_next = original["Next Action Date"]
-                        if mark_done_flag and pd.notna(orig_next):
-                            updates["next_action_date"] = None
-                        if updates:
-                            fields = [f"{k} = ?" for k in updates]
-                            values = [updates[k] for k in updates]
-                            conn.execute(
-                                f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
-                                values + [row_id],
-                            )
-                st.success("History updated.")
-            except Exception as exc:
-                st.error(f"Failed to save history updates: {exc}")
+        st.dataframe(styled_history, use_container_width=True, hide_index=True)
+
+        with st.expander("Edit or mark done"):
+            edited_history = st.data_editor(
+                history_display.drop(columns=["Assigned Color"]),
+                column_config={
+                    "ID": st.column_config.Column(disabled=True),
+                    "Date": st.column_config.DateColumn(),
+                    "Next Action Date": st.column_config.DateColumn(),
+                    "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
+                    "Passage": st.column_config.NumberColumn(step=1),
+                    "Volume (mL)": st.column_config.NumberColumn(step=0.5),
+                    "Mark Done": st.column_config.CheckboxColumn(),
+                },
+                hide_index=True,
+                use_container_width=True,
+            )
+            if st.button("Save history edits", key="save_history"):
+                try:
+                    with conn:
+                        base_lookup = history_display.set_index("ID")
+                        for _, row in edited_history.iterrows():
+                            row_id = row["ID"]
+                            original = base_lookup.loc[row_id]
+                            updates = {}
+                            for col, orig_col in [
+                                ("Date","date"),
+                                ("Cell Line","cell_line"),
+                                ("Event Type","event_type"),
+                                ("Passage","passage"),
+                                ("Vessel","vessel"),
+                                ("Location","location"),
+                                ("Culture Medium","medium"),
+                                ("Cell Type","cell_type"),
+                                ("Volume (mL)","volume"),
+                                ("Notes","notes"),
+                                ("Operator","operator"),
+                                ("Thaw ID","thaw_id"),
+                                ("Cryo Vial Position","cryo_vial_position"),
+                                ("Assigned To","assigned_to"),
+                                ("Next Action Date","next_action_date"),
+                            ]:
+                                val = row[col]
+                                if col in ("Assigned To",) and (val in (None,"(unassigned)")):
+                                    val = None
+                                if col in ("Date","Next Action Date") and pd.notna(val):
+                                    val = pd.to_datetime(val).date().isoformat()
+                                if col in ("Date","Next Action Date") and pd.isna(val):
+                                    val = None
+                                orig_val = original[col]
+                                if col in ("Date","Next Action Date") and isinstance(orig_val, pd.Timestamp):
+                                    orig_val = orig_val.date().isoformat()
+                                if orig_val != val:
+                                    updates[orig_col] = val
+                            mark_done_flag = bool(row.get("Mark Done"))
+                            orig_next = original["Next Action Date"]
+                            if mark_done_flag and pd.notna(orig_next):
+                                updates["next_action_date"] = None
+                            if updates:
+                                fields = [f"{k} = ?" for k in updates]
+                                values = [updates[k] for k in updates]
+                                conn.execute(
+                                    f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
+                                    values + [row_id],
+                                )
+                    st.success("History updated.")
+                except Exception as exc:
+                    st.error(f"Failed to save history updates: {exc}")
             csv = edited_history.to_csv(index=False).encode('utf-8')
             st.download_button("📂 Download CSV", data=csv, file_name="ipsc_culture_log.csv", mime="text/csv")
 
