@@ -563,6 +563,7 @@ with tab_history:
             "created_by": "Created By",
             "assigned_color": "Assigned Color",
         })
+        history_display["Mark Done"] = history_display["Next Action Date"].isna()
         history_display["Assigned Color"] = history_display["Assigned Color"].astype(str)
         color_series = history_display.set_index("ID")["Assigned Color"]
         history_view = history_display.drop(columns=["Assigned Color"]).set_index("ID")
@@ -582,6 +583,7 @@ with tab_history:
                     "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
                     "Passage": st.column_config.NumberColumn(step=1),
                     "Volume (mL)": st.column_config.NumberColumn(step=0.5),
+                    "Mark Done": st.column_config.CheckboxColumn(),
                 },
                 hide_index=True,
                 use_container_width=True,
@@ -619,15 +621,19 @@ with tab_history:
                                 if col in ("Date","Next Action Date") and pd.isna(val):
                                     val = None
                                 orig_val = original[col]
-                                if col in ("Date","Next Action Date") and isinstance(orig_val, pd.Timestamp):
-                                    orig_val = orig_val.date().isoformat()
-                                if orig_val != val:
-                                    updates[orig_col] = val
-                            if updates:
-                                fields = [f"{k} = ?" for k in updates]
-                                values = [updates[k] for k in updates]
-                                conn.execute(
-                                    f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
+                            if col in ("Date","Next Action Date") and isinstance(orig_val, pd.Timestamp):
+                                orig_val = orig_val.date().isoformat()
+                            if orig_val != val:
+                                updates[orig_col] = val
+                        mark_done_flag = bool(row.get("Mark Done"))
+                        orig_next = original["Next Action Date"]
+                        if mark_done_flag and pd.notna(orig_next):
+                            updates["next_action_date"] = None
+                        if updates:
+                            fields = [f"{k} = ?" for k in updates]
+                            values = [updates[k] for k in updates]
+                            conn.execute(
+                                f"UPDATE logs SET {', '.join(fields)} WHERE id = ?",
                                     values + [row_id],
                                 )
                     st.success("History updated.")
