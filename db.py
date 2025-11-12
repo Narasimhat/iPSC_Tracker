@@ -342,11 +342,10 @@ def insert_log(conn, payload: Dict[str, Any]) -> int:
     ]
     values = [payload.get(c) for c in cols]
     placeholders = ", ".join(["%s"] * len(cols))
-    sql = f"INSERT INTO logs ({', '.join(cols)}) VALUES ({placeholders}) RETURNING id"
+    sql = f"INSERT INTO logs ({', '.join(cols)}) VALUES ({placeholders})"
     with closing(conn.cursor()) as cur:
         cur.execute(sql, values)
-        row = cur.fetchone()
-        return int(row[0]) if row else -1
+    return 0
 
 
 def query_logs(
