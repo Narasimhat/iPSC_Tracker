@@ -2,7 +2,7 @@ import os
 import io
 import statistics
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -27,6 +27,7 @@ from db import (
     backup_now,
     get_last_log_for_line_event,
     get_recent_logs_for_cell_line,
+    get_latest_log_for_thaw,
     get_last_thaw_id,
     get_weekend_schedule,
     upsert_weekend_assignment,
@@ -296,6 +297,49 @@ def _color_for_user(username: Optional[str]) -> str:
     if stored and stored.strip():
         return stored.strip()
     return DEFAULT_USER_COLOR
+
+
+def _apply_thaw_autofill_to_state(payload: Dict[str, Any]) -> None:
+    if not payload:
+        return
+    field_map = {
+        "cell_line": ["cell_line_select"],
+        "vessel": ["vessel_select", "vessel_text_input"],
+        "location": ["location_select", "location_text_input"],
+        "medium": ["medium_select", "medium_text_input"],
+        "cell_type": ["cell_type_select", "cell_type_text_input"],
+        "cryo_vial_position": ["cryo_vial_position_input"],
+    }
+    for source, keys in field_map.items():
+        value = payload.get(source)
+        if value in (None, ""):
+            continue
+        for key in keys:
+            st.session_state[key] = value
+    volume_val = payload.get("volume")
+    if volume_val not in (None, ""):
+        try:
+            st.session_state["volume_input"] = float(volume_val)
+        except (TypeError, ValueError):
+            pass
+    st.session_state["thaw_autofill_payload"] = payload
+
+
+def _consume_pending_thaw_autofill() -> Optional[str]:
+    payload = st.session_state.pop("pending_thaw_autofill", None)
+    thaw_id = st.session_state.pop("pending_thaw_autofill_id", None)
+    if payload and thaw_id:
+        _apply_thaw_autofill_to_state(payload)
+        st.session_state["active_thaw_autofill_id"] = thaw_id
+        return thaw_id
+    return None
+
+
+def _clear_active_thaw_autofill() -> None:
+    st.session_state.pop("active_thaw_autofill_id", None)
+    st.session_state.pop("thaw_autofill_payload", None)
+    st.session_state.pop("pending_thaw_autofill", None)
+    st.session_state.pop("pending_thaw_autofill_id", None)
 my_name = st.selectbox("My name", options=["(none)"] + _usernames_all if _usernames_all else ["(none)"], index=0, help="Used for 'Assigned to me' filters")
 st.session_state["my_name"] = None if my_name == "(none)" else my_name
 
@@ -355,6 +399,7 @@ with tab_add:
         template_suggests = template_cfg.get("suggested_values", {})
         recent_history = []
         prev = None
+        _consume_pending_thaw_autofill()
 
         id_col1, id_col2, id_col3, id_col4 = st.columns([1.7, 1.3, 1.1, 0.9])
         with id_col1:
@@ -382,6 +427,7 @@ with tab_add:
                 "Cryovial Position",
                 value=cryo_vial_position,
                 placeholder="e.g., Box A2, Row 3 Col 5",
+                key="cryo_vial_position_input",
             )
         with id_col4:
             default_volume = 0.0
@@ -390,7 +436,7 @@ with tab_add:
                     default_volume = float(prev.get("volume"))
                 except Exception:
                     default_volume = 0.0
-            volume = st.number_input("Volume (mL)", min_value=0.0, step=0.5, value=default_volume)
+            volume = st.number_input("Volume (mL)", min_value=0.0, step=0.5, value=default_volume, key="volume_input")
         form_ready = bool(cell_line and event_type)
 
         prev = None
@@ -426,26 +472,26 @@ with tab_add:
             vessel_default = prev.get("vessel") if prev and prev.get("vessel") else template_suggests.get("vessel", "")
             if vessel_refs:
                 v_idx = vessel_refs.index(vessel_default) if vessel_default in vessel_refs else 0
-                vessel = st.selectbox("Vessel", options=vessel_refs, index=v_idx)
+                vessel = st.selectbox("Vessel", options=vessel_refs, index=v_idx, key="vessel_select")
             else:
-                vessel = st.text_input("Vessel", value=vessel_default, placeholder="e.g., T25, 6-well plate")
+                vessel = st.text_input("Vessel", value=vessel_default, placeholder="e.g., T25, 6-well plate", key="vessel_text_input")
         with row1_col3:
             location_refs = get_ref_values_cached("location")
             default_location = prev.get("location") if prev and prev.get("location") else template_suggests.get("location", "")
             if location_refs:
                 loc_idx = location_refs.index(default_location) if default_location in location_refs else 0
-                location = st.selectbox("Location", options=location_refs, index=loc_idx)
+                location = st.selectbox("Location", options=location_refs, index=loc_idx, key="location_select")
             else:
-                location = st.text_input("Location", value=default_location, placeholder="e.g., Incubator A, Shelf 2")
+                location = st.text_input("Location", value=default_location, placeholder="e.g., Incubator A, Shelf 2", key="location_text_input")
         with row1_col4:
             _med_sugs = top_values(conn, "medium", cell_line=cell_line) if cell_line else top_values(conn, "medium")
             cm_refs = get_ref_values_cached("culture_medium")
             default_med = prev.get("medium") if prev and prev.get("medium") else template_suggests.get("medium", "")
             if cm_refs:
                 med_idx = cm_refs.index(default_med) if default_med in cm_refs else 0
-                medium = st.selectbox("Culture Medium", options=cm_refs, index=med_idx)
+                medium = st.selectbox("Culture Medium", options=cm_refs, index=med_idx, key="medium_select")
             else:
-                medium = st.text_input("Culture Medium", value=default_med, placeholder="e.g., StemFlex")
+                medium = st.text_input("Culture Medium", value=default_med, placeholder="e.g., StemFlex", key="medium_text_input")
             if _med_sugs:
                 st.caption("Popular: " + ", ".join([str(x) for x in _med_sugs]))
         with row1_col5:
@@ -454,9 +500,9 @@ with tab_add:
             default_ct = prev.get("cell_type") if prev and prev.get("cell_type") else template_suggests.get("cell_type", "")
             if ct_refs:
                 ct_idx = ct_refs.index(default_ct) if default_ct in ct_refs else 0
-                cell_type = st.selectbox("Cell Type", options=ct_refs, index=ct_idx)
+                cell_type = st.selectbox("Cell Type", options=ct_refs, index=ct_idx, key="cell_type_select")
             else:
-                cell_type = st.text_input("Cell Type", value=default_ct, placeholder="e.g., iPSC, NPC, cardiomyocyte")
+                cell_type = st.text_input("Cell Type", value=default_ct, placeholder="e.g., iPSC, NPC, cardiomyocyte", key="cell_type_text_input")
             if _ct_sugs:
                 st.caption("Frequent: " + ", ".join([str(x) for x in _ct_sugs]))
         if cell_line and recent_history:
@@ -517,6 +563,7 @@ with tab_add:
         linked_thaw_id = ""
         latest_thaw_for_line = get_last_thaw_id(conn, cell_line) if cell_line else None
         if event_type == "Thawing":
+            _clear_active_thaw_autofill()
             if cell_line and operator:
                 thaw_preview = generate_thaw_id(conn, cell_line, operator, log_date)
                 thaw_label = thaw_preview
@@ -534,7 +581,22 @@ with tab_add:
                 options=options,
                 index=idx,
                 help="Associate with an existing thaw event (required for follow-ups).",
+                key="linked_thaw_select",
             )
+            active_thaw_id = st.session_state.get("active_thaw_autofill_id")
+            if linked_thaw_id and linked_thaw_id not in ("(none)",):
+                if active_thaw_id == linked_thaw_id:
+                    st.caption(f"Fields prefilled from thaw {linked_thaw_id}.")
+                else:
+                    latest_record = get_latest_log_for_thaw(conn, linked_thaw_id)
+                    if latest_record:
+                        st.session_state["pending_thaw_autofill"] = latest_record
+                        st.session_state["pending_thaw_autofill_id"] = linked_thaw_id
+                        st.experimental_rerun()
+                    else:
+                        st.info("No prior entries found for this Thaw ID to copy.")
+            else:
+                _clear_active_thaw_autofill()
 
         submitted = st.form_submit_button("Save Entry", disabled=not form_ready)
         if submitted:

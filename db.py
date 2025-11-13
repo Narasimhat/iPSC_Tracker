@@ -557,6 +557,22 @@ def get_recent_logs_for_cell_line(conn, cell_line: str, limit: int = 10) -> List
         return _fetchall_dicts(cur)
 
 
+def get_latest_log_for_thaw(conn, thaw_id: str) -> Optional[Dict[str, Any]]:
+    if not thaw_id:
+        return None
+    return _fetch_single_row(
+        conn,
+        """
+        SELECT *
+        FROM logs
+        WHERE thaw_id = %s
+        ORDER BY date DESC, created_at DESC
+        LIMIT 1
+        """,
+        (thaw_id,),
+    )
+
+
 def predict_next_passage(conn, cell_line: str) -> Optional[int]:
     last = get_last_log_for_cell_line(conn, cell_line)
     if not last:
