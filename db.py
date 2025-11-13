@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 from contextlib import closing
 from datetime import date, datetime
@@ -176,6 +177,15 @@ def init_db(conn) -> None:
                 )
                 """
             )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS entry_templates (
+                name VARCHAR PRIMARY KEY,
+                payload VARIANT,
+                created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
     # Ensure legacy Snowflake bootstrap columns exist (from earlier script)
     with closing(conn.cursor()) as cur:
@@ -440,6 +450,35 @@ def add_ref_value(conn, kind: str, name: str) -> None:
 def delete_ref_value(conn, kind: str, name: str) -> None:
     table = _ref_table_for(kind)
     _execute(conn, f"DELETE FROM {table} WHERE name = %s", (name.strip(),))
+
+
+def list_entry_templates(conn) -> List[Dict[str, Any]]:
+    with closing(_dict_cursor(conn)) as cur:
+        cur.execute("SELECT name, payload, created_at FROM entry_templates ORDER BY name")
+        return _fetchall_dicts(cur)
+
+
+def save_entry_template(conn, name: str, payload: Dict[str, Any]) -> None:
+    normalized = name.strip()
+    if not normalized:
+        raise ValueError("Template name required")
+    payload_json = json.dumps(payload or {})
+    with closing(conn.cursor()) as cur:
+        cur.execute(
+            """
+            MERGE INTO entry_templates AS tgt
+            USING (SELECT %s AS name, PARSE_JSON(%s) AS payload) AS src
+            ON tgt.name = src.name
+            WHEN MATCHED THEN UPDATE SET payload = src.payload, created_at = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN INSERT (name, payload, created_at)
+            VALUES (src.name, src.payload, CURRENT_TIMESTAMP())
+            """,
+            (normalized, payload_json),
+        )
+
+
+def delete_entry_template(conn, name: str) -> None:
+    _execute(conn, "DELETE FROM entry_templates WHERE name = %s", (name.strip(),))
 
 
 def rename_ref_value(conn, kind: str, old_name: str, new_name: str) -> None:

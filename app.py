@@ -3,6 +3,7 @@ import io
 import statistics
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
+import json
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -40,6 +41,9 @@ from db import (
     update_log_fields,
     bulk_update_logs,
     IMAGES_DIR,
+    list_entry_templates,
+    save_entry_template,
+    delete_entry_template,
 )
 
 st.set_page_config(page_title="iPSC Culture Tracker", layout="wide")
@@ -305,16 +309,20 @@ def _color_for_user(username: Optional[str]) -> str:
     return DEFAULT_USER_COLOR
 
 
-def _apply_thaw_autofill_to_state(payload: Dict[str, Any]) -> None:
+def _apply_form_prefill(payload: Dict[str, Any]) -> None:
     if not payload:
         return
     field_map = {
         "cell_line": ["cell_line_select"],
+        "event_type": ["event_type_select", "event_type_select_fallback"],
         "vessel": ["vessel_select", "vessel_text_input"],
         "location": ["location_select", "location_text_input"],
         "medium": ["medium_select", "medium_text_input"],
         "cell_type": ["cell_type_select", "cell_type_text_input"],
         "cryo_vial_position": ["cryo_vial_position_input"],
+        "notes": ["notes_input"],
+        "operator": ["operator_select"],
+        "assigned_to": ["assigned_select"],
     }
     for source, keys in field_map.items():
         value = payload.get(source)
@@ -322,30 +330,129 @@ def _apply_thaw_autofill_to_state(payload: Dict[str, Any]) -> None:
             continue
         for key in keys:
             st.session_state[key] = value
+    if payload.get("passage"):
+        try:
+            st.session_state["passage_input"] = int(payload["passage"])
+        except (TypeError, ValueError):
+            pass
     volume_val = payload.get("volume")
     if volume_val not in (None, ""):
         try:
             st.session_state["volume_input"] = float(volume_val)
         except (TypeError, ValueError):
             pass
-    st.session_state["thaw_autofill_payload"] = payload
+    nad_val = payload.get("next_action_date")
+    if nad_val:
+        st.session_state["next_action_date_input"] = pd.to_datetime(nad_val).date()
+    notes = payload.get("notes")
+    if notes not in (None, ""):
+        st.session_state["notes_input"] = notes
+    st.session_state["form_prefill_payload"] = payload
 
 
-def _consume_pending_thaw_autofill() -> Optional[str]:
-    payload = st.session_state.pop("pending_thaw_autofill", None)
-    thaw_id = st.session_state.pop("pending_thaw_autofill_id", None)
-    if payload and thaw_id:
-        _apply_thaw_autofill_to_state(payload)
-        st.session_state["active_thaw_autofill_id"] = thaw_id
-        return thaw_id
+def _queue_form_prefill(payload: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> None:
+    st.session_state["pending_form_prefill"] = payload
+    st.session_state["pending_form_prefill_meta"] = meta or {}
+
+
+def _consume_pending_form_prefill() -> Optional[Dict[str, Any]]:
+    payload = st.session_state.pop("pending_form_prefill", None)
+    meta = st.session_state.pop("pending_form_prefill_meta", None)
+    if payload:
+        _apply_form_prefill(payload)
+        if meta is not None:
+            st.session_state["active_form_prefill_meta"] = meta
+        return meta
     return None
 
 
-def _clear_active_thaw_autofill() -> None:
-    st.session_state.pop("active_thaw_autofill_id", None)
-    st.session_state.pop("thaw_autofill_payload", None)
-    st.session_state.pop("pending_thaw_autofill", None)
-    st.session_state.pop("pending_thaw_autofill_id", None)
+def _clear_active_form_prefill(kind: Optional[str] = None) -> None:
+    meta = st.session_state.get("active_form_prefill_meta")
+    if meta and (kind is None or meta.get("kind") == kind):
+        st.session_state.pop("active_form_prefill_meta", None)
+    st.session_state.pop("form_prefill_payload", None)
+    st.session_state.pop("pending_form_prefill", None)
+    st.session_state.pop("pending_form_prefill_meta", None)
+
+
+def _prefill_payload_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    if not row:
+        return payload
+    for field in [
+        "cell_line",
+        "event_type",
+        "passage",
+        "vessel",
+        "location",
+        "medium",
+        "cell_type",
+        "volume",
+        "notes",
+        "operator",
+        "assigned_to",
+        "cryo_vial_position",
+        "thaw_id",
+    ]:
+        value = row.get(field)
+        if value not in (None, ""):
+            payload[field] = value
+    nad = row.get("next_action_date")
+    if nad:
+        try:
+            payload["next_action_date"] = pd.to_datetime(nad).date().isoformat()
+        except Exception:
+            payload["next_action_date"] = nad
+    return payload
+
+
+def _build_template_payload(
+    *,
+    cell_line: Optional[str],
+    event_type: Optional[str],
+    passage: Optional[int],
+    vessel: Optional[str],
+    location: Optional[str],
+    medium: Optional[str],
+    cell_type: Optional[str],
+    volume: Optional[float],
+    notes: Optional[str],
+    operator: Optional[str],
+    assigned_to: Optional[str],
+    cryo_vial_position: Optional[str],
+    next_action_date: Optional[date],
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    for key, value in [
+        ("cell_line", cell_line),
+        ("event_type", event_type),
+        ("passage", passage),
+        ("vessel", vessel),
+        ("location", location),
+        ("medium", medium),
+        ("cell_type", cell_type),
+        ("volume", volume),
+        ("notes", notes),
+        ("operator", operator),
+        ("assigned_to", assigned_to),
+        ("cryo_vial_position", cryo_vial_position),
+    ]:
+        if value not in (None, ""):
+            payload[key] = value
+    if next_action_date:
+        payload["next_action_date"] = next_action_date.isoformat()
+    return payload
+
+
+def _as_payload_dict(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+    return {}
 my_name = st.selectbox("My name", options=["(none)"] + _usernames_all if _usernames_all else ["(none)"], index=0, help="Used for 'Assigned to me' filters")
 st.session_state["my_name"] = None if my_name == "(none)" else my_name
 
@@ -405,7 +512,16 @@ with tab_add:
         template_suggests = template_cfg.get("suggested_values", {})
         recent_history = []
         prev = None
-        _consume_pending_thaw_autofill()
+        prefill_meta = _consume_pending_form_prefill() or st.session_state.get("active_form_prefill_meta")
+
+        if prefill_meta and prefill_meta.get("label"):
+            source_kind = prefill_meta.get("kind", "source")
+            if source_kind == "template":
+                st.caption(f"Template '{prefill_meta.get('label')}' applied to this form.")
+            elif source_kind == "recent":
+                st.caption(f"Copied values from log #{prefill_meta.get('label')}.")
+            elif source_kind == "thaw":
+                st.caption(f"Fields prefilled from thaw {prefill_meta.get('label')}.")
 
         id_col1, id_col2, id_col3, id_col4 = st.columns([1.7, 1.3, 1.1, 0.9])
         with id_col1:
@@ -470,7 +586,7 @@ with tab_add:
                             default_passage = split_auto
                         except Exception:
                             split_auto = None
-            passage_no = st.number_input("Passage No.", min_value=1, step=1, value=default_passage)
+            passage_no = st.number_input("Passage No.", min_value=1, step=1, value=default_passage, key="passage_input")
             if split_auto:
                 st.caption(f"Split detected → Passage auto-set to {split_auto}.")
         with row1_col2:
@@ -525,7 +641,7 @@ with tab_add:
                     st.warning(f"Volume differs from recent median ({median_vol:.1f} mL). Double-check before saving.")
 
         notes_placeholder = template_cfg.get("note_hint", "Observations, QC checks, follow-ups…")
-        notes = st.text_area("Notes", placeholder=notes_placeholder, height=80)
+        notes = st.text_area("Notes", placeholder=notes_placeholder, height=80, key="notes_input")
 
         st.divider()
         sched_col1, sched_col2, sched_col3, sched_col4, sched_col5 = st.columns([1, 1, 1, 1, 1])
@@ -535,10 +651,10 @@ with tab_add:
                 op_index = 0
                 if st.session_state.get("my_name") and st.session_state["my_name"] in usernames:
                     op_index = usernames.index(st.session_state["my_name"])
-                operator = st.selectbox("Operator *", options=usernames, index=op_index)
+                operator = st.selectbox("Operator *", options=usernames, index=op_index, key="operator_select")
             else:
                 st.info("No operators yet. Add some under Settings → Operators.")
-                operator = st.text_input("Operator *", placeholder="Your name")
+                operator = st.text_input("Operator *", placeholder="Your name", key="operator_text_input")
         with sched_col2:
             log_date = st.date_input("Date *", value=date.today())
         default_nad = None
@@ -548,7 +664,7 @@ with tab_add:
             default_nad = date.today() + timedelta(days=EVENT_FOLLOWUP_DEFAULTS[event_type])
 
         with sched_col3:
-            next_action_date = st.date_input("Next Action Date", value=default_nad)
+            next_action_date = st.date_input("Next Action Date", value=default_nad, key="next_action_date_input")
         with sched_col4:
             all_users = get_usernames_cached()
             assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
@@ -560,7 +676,7 @@ with tab_add:
                 assign_index = assigned_options.index(weekend_autofill)
             elif st.session_state.get("my_name") and st.session_state["my_name"] in assigned_options:
                 assign_index = assigned_options.index(st.session_state["my_name"])
-            assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index)
+            assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index, key="assigned_select")
             if weekend_autofill:
                 st.caption(f"Weekend duty auto-selected: {weekend_autofill}")
         with sched_col5:
@@ -569,7 +685,7 @@ with tab_add:
         linked_thaw_id = ""
         latest_thaw_for_line = get_last_thaw_id(conn, cell_line) if cell_line else None
         if event_type == "Thawing":
-            _clear_active_thaw_autofill()
+            _clear_active_form_prefill(kind="thaw")
             if cell_line and operator:
                 thaw_preview = generate_thaw_id(conn, cell_line, operator, log_date)
                 thaw_label = thaw_preview
@@ -589,20 +705,20 @@ with tab_add:
                 help="Associate with an existing thaw event (required for follow-ups).",
                 key="linked_thaw_select",
             )
-            active_thaw_id = st.session_state.get("active_thaw_autofill_id")
+            active_meta = st.session_state.get("active_form_prefill_meta") or {}
+            active_thaw_id = active_meta.get("label") if active_meta.get("kind") == "thaw" else None
             if linked_thaw_id and linked_thaw_id not in ("(none)",):
                 if active_thaw_id == linked_thaw_id:
                     st.caption(f"Fields prefilled from thaw {linked_thaw_id}.")
                 else:
                     latest_record = get_latest_log_for_thaw(conn, linked_thaw_id)
                     if latest_record:
-                        st.session_state["pending_thaw_autofill"] = latest_record
-                        st.session_state["pending_thaw_autofill_id"] = linked_thaw_id
+                        _queue_form_prefill(latest_record, meta={"kind": "thaw", "label": linked_thaw_id})
                         _trigger_rerun()
                     else:
                         st.info("No prior entries found for this Thaw ID to copy.")
             else:
-                _clear_active_thaw_autofill()
+                _clear_active_form_prefill(kind="thaw")
 
         submitted = st.form_submit_button("Save Entry", disabled=not form_ready)
         if submitted:
@@ -675,6 +791,105 @@ with tab_add:
             st.success("✅ Log entry saved to database!")
             if auto_assignee_note:
                 st.info(f"Assigned to weekend duty: {auto_assignee_note}")
+
+    reuse_history = recent_history if 'recent_history' in locals() else []
+    template_rows = list_entry_templates(conn)
+    template_map = {row.get("name"): _as_payload_dict(row.get("payload")) for row in template_rows if row.get("name")}
+    template_names = sorted(template_map.keys())
+    with st.expander("Reuse previous entry or templates", expanded=False):
+        col_recent, col_templates = st.columns(2)
+        with col_recent:
+            st.markdown("**Copy a recent entry**")
+            if reuse_history:
+                recent_map: Dict[str, Dict[str, Any]] = {}
+                option_keys: List[str] = []
+                for entry in reuse_history:
+                    entry_id = str(entry.get("id") or f"row-{len(option_keys)}")
+                    recent_map[entry_id] = entry
+                    option_keys.append(entry_id)
+                selected_recent = st.selectbox(
+                    "Recent entries for this cell line",
+                    options=["(none)"] + option_keys,
+                    format_func=lambda opt: "Choose entry"
+                    if opt == "(none)"
+                    else " · ".join(
+                        [
+                            f"#{recent_map[opt].get('id', '?')}",
+                            str(recent_map[opt].get("date") or "?"),
+                            str(recent_map[opt].get("event_type") or "?"),
+                        ]
+                    ),
+                    key="prefill_recent_select",
+                )
+                if st.button(
+                    "Copy selected entry",
+                    key="prefill_recent_btn",
+                    disabled=selected_recent == "(none)",
+                ):
+                    payload = _prefill_payload_from_row(recent_map[selected_recent])
+                    _queue_form_prefill(payload, meta={"kind": "recent", "label": selected_recent})
+                    _trigger_rerun()
+            else:
+                st.info("Select a cell line with prior logs to enable copying.")
+        with col_templates:
+            st.markdown("**Templates**")
+            template_choice = st.selectbox(
+                "Load template",
+                options=["(none)"] + template_names,
+                key="template_load_select",
+            )
+            if st.button(
+                "Load template values",
+                key="template_load_btn",
+                disabled=template_choice == "(none)",
+            ):
+                payload = _as_payload_dict(template_map.get(template_choice))
+                if payload:
+                    _queue_form_prefill(payload, meta={"kind": "template", "label": template_choice})
+                    _trigger_rerun()
+                else:
+                    st.warning("Template payload unavailable.")
+
+            template_name_input = st.text_input("Template name", key="template_name_input")
+            if st.button("Save current form as template", key="template_save_btn"):
+                if not template_name_input or not template_name_input.strip():
+                    st.warning("Enter a template name.")
+                else:
+                    template_payload = _build_template_payload(
+                        cell_line=cell_line,
+                        event_type=event_type,
+                        passage=int(passage_no) if passage_no else None,
+                        vessel=vessel,
+                        location=location,
+                        medium=medium,
+                        cell_type=cell_type,
+                        volume=float(volume) if volume is not None else None,
+                        notes=notes,
+                        operator=operator,
+                        assigned_to=None if assigned_to in (None, "(unassigned)") else assigned_to,
+                        cryo_vial_position=cryo_vial_position,
+                        next_action_date=next_action_date,
+                    )
+                    save_entry_template(conn, template_name_input.strip(), template_payload)
+                    st.success("Template saved.")
+                    _trigger_rerun()
+
+            if template_names:
+                delete_choice = st.selectbox(
+                    "Delete template",
+                    options=["(none)"] + template_names,
+                    key="template_delete_select",
+                )
+                if st.button(
+                    "Delete selected template",
+                    key="template_delete_btn",
+                    disabled=delete_choice == "(none)",
+                ):
+                    delete_entry_template(conn, delete_choice)
+                    st.success("Template deleted.")
+                    _trigger_rerun()
+            else:
+                st.caption("No templates saved yet.")
 
 with tab_history:
     st.subheader("📜 Culture History")
