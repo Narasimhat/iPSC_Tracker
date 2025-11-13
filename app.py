@@ -453,6 +453,12 @@ def _as_payload_dict(raw: Any) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
+
+
+def _text_input_stateful(label: str, *, key: str, default: str = "", **kwargs):
+    if key in st.session_state:
+        return st.text_input(label, key=key, **kwargs)
+    return st.text_input(label, value=default, key=key, **kwargs)
 my_name = st.selectbox("My name", options=["(none)"] + _usernames_all if _usernames_all else ["(none)"], index=0, help="Used for 'Assigned to me' filters")
 st.session_state["my_name"] = None if my_name == "(none)" else my_name
 
@@ -545,9 +551,9 @@ with tab_add:
             cryo_vial_position = template_suggests.get("cryo_vial_position", "")
             if not cryo_vial_position and recent_history:
                 cryo_vial_position = recent_history[0].get("cryo_vial_position") or ""
-            cryo_vial_position = st.text_input(
+            cryo_vial_position = _text_input_stateful(
                 "Cryovial Position",
-                value=cryo_vial_position,
+                default=cryo_vial_position,
                 placeholder="e.g., Box A2, Row 3 Col 5",
                 key="cryo_vial_position_input",
             )
@@ -596,7 +602,9 @@ with tab_add:
                 v_idx = vessel_refs.index(vessel_default) if vessel_default in vessel_refs else 0
                 vessel = st.selectbox("Vessel", options=vessel_refs, index=v_idx, key="vessel_select")
             else:
-                vessel = st.text_input("Vessel", value=vessel_default, placeholder="e.g., T25, 6-well plate", key="vessel_text_input")
+                vessel = _text_input_stateful(
+                    "Vessel", default=vessel_default, placeholder="e.g., T25, 6-well plate", key="vessel_text_input"
+                )
         with row1_col3:
             location_refs = get_ref_values_cached("location")
             default_location = prev.get("location") if prev and prev.get("location") else template_suggests.get("location", "")
@@ -604,7 +612,12 @@ with tab_add:
                 loc_idx = location_refs.index(default_location) if default_location in location_refs else 0
                 location = st.selectbox("Location", options=location_refs, index=loc_idx, key="location_select")
             else:
-                location = st.text_input("Location", value=default_location, placeholder="e.g., Incubator A, Shelf 2", key="location_text_input")
+                location = _text_input_stateful(
+                    "Location",
+                    default=default_location,
+                    placeholder="e.g., Incubator A, Shelf 2",
+                    key="location_text_input",
+                )
         with row1_col4:
             _med_sugs = top_values(conn, "medium", cell_line=cell_line) if cell_line else top_values(conn, "medium")
             cm_refs = get_ref_values_cached("culture_medium")
@@ -613,7 +626,9 @@ with tab_add:
                 med_idx = cm_refs.index(default_med) if default_med in cm_refs else 0
                 medium = st.selectbox("Culture Medium", options=cm_refs, index=med_idx, key="medium_select")
             else:
-                medium = st.text_input("Culture Medium", value=default_med, placeholder="e.g., StemFlex", key="medium_text_input")
+                medium = _text_input_stateful(
+                    "Culture Medium", default=default_med, placeholder="e.g., StemFlex", key="medium_text_input"
+                )
             if _med_sugs:
                 st.caption("Popular: " + ", ".join([str(x) for x in _med_sugs]))
         with row1_col5:
@@ -624,7 +639,12 @@ with tab_add:
                 ct_idx = ct_refs.index(default_ct) if default_ct in ct_refs else 0
                 cell_type = st.selectbox("Cell Type", options=ct_refs, index=ct_idx, key="cell_type_select")
             else:
-                cell_type = st.text_input("Cell Type", value=default_ct, placeholder="e.g., iPSC, NPC, cardiomyocyte", key="cell_type_text_input")
+                cell_type = _text_input_stateful(
+                    "Cell Type",
+                    default=default_ct,
+                    placeholder="e.g., iPSC, NPC, cardiomyocyte",
+                    key="cell_type_text_input",
+                )
             if _ct_sugs:
                 st.caption("Frequent: " + ", ".join([str(x) for x in _ct_sugs]))
         if cell_line and recent_history:
@@ -654,7 +674,7 @@ with tab_add:
                 operator = st.selectbox("Operator *", options=usernames, index=op_index, key="operator_select")
             else:
                 st.info("No operators yet. Add some under Settings → Operators.")
-                operator = st.text_input("Operator *", placeholder="Your name", key="operator_text_input")
+                operator = _text_input_stateful("Operator *", default="", placeholder="Your name", key="operator_text_input")
         with sched_col2:
             log_date = st.date_input("Date *", value=date.today())
         default_nad = None
