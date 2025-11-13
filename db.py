@@ -12,6 +12,7 @@ DATA_ROOT = os.environ.get("DATA_ROOT", os.path.dirname(__file__))
 IMAGES_DIR = os.path.join(DATA_ROOT, "images")
 
 _SNOWFLAKE_KEYS = ("account", "user", "password", "warehouse", "database", "schema", "role")
+_WEEKEND_RANGE_FLAGS: Optional[Dict[str, bool]] = None
 
 
 def ensure_dirs() -> None:
@@ -92,6 +93,16 @@ def _table_has_column(conn, table: str, column: str) -> bool:
             (table.upper(), column.upper()),
         )
         return cur.fetchone() is not None
+
+
+def _weekend_range_column_flags(conn) -> Dict[str, bool]:
+    global _WEEKEND_RANGE_FLAGS
+    if _WEEKEND_RANGE_FLAGS is None:
+        _WEEKEND_RANGE_FLAGS = {
+            "start_date": _table_has_column(conn, "WEEKEND_SCHEDULE", "START_DATE"),
+            "end_date": _table_has_column(conn, "WEEKEND_SCHEDULE", "END_DATE"),
+        }
+    return _WEEKEND_RANGE_FLAGS
 
 
 def init_db(conn) -> None:
@@ -602,6 +613,7 @@ def get_weekend_schedule(conn) -> List[Dict[str, Any]]:
 
 
 def upsert_weekend_assignment(conn, dates: List[str], assigned_to: Optional[str], notes: Optional[str]) -> None:
+    range_flags = _weekend_range_column_flags(conn)
     for date_str in dates:
         with closing(conn.cursor()) as cur:
             cur.execute(
@@ -615,12 +627,24 @@ def upsert_weekend_assignment(conn, dates: List[str], assigned_to: Optional[str]
                 (assigned_to, notes, date_str),
             )
             if cur.rowcount == 0:
+                insert_cols = ["date"]
+                insert_vals: List[Any] = [date_str]
+                if range_flags.get("start_date"):
+                    insert_cols.append("start_date")
+                    insert_vals.append(date_str)
+                if range_flags.get("end_date"):
+                    insert_cols.append("end_date")
+                    insert_vals.append(date_str)
+                insert_cols.extend(["assigned_to", "notes"])
+                insert_vals.extend([assigned_to, notes])
+                cols_sql = ", ".join(insert_cols + ["updated_at"])
+                placeholders = ", ".join(["%s"] * len(insert_vals) + ["CURRENT_TIMESTAMP()"])
                 cur.execute(
-                    """
-                    INSERT INTO weekend_schedule (date, assigned_to, notes, updated_at)
-                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP())
+                    f"""
+                    INSERT INTO weekend_schedule ({cols_sql})
+                    VALUES ({placeholders})
                     """,
-                    (date_str, assigned_to, notes),
+                    tuple(insert_vals),
                 )
 
 
