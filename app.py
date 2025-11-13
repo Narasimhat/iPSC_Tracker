@@ -2,7 +2,7 @@ import os
 import io
 import statistics
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -31,7 +31,6 @@ from db import (
     get_weekend_schedule,
     upsert_weekend_assignment,
     delete_weekend_assignment,
-    get_weekend_assignment_for_date,
     get_or_create_user,
     delete_user,
     update_user_color,
@@ -85,15 +84,154 @@ st.markdown(
 )
 
 # Initialize database and storage
-conn = get_conn()
-init_db(conn)
-ensure_dirs()
+@st.cache_resource(show_spinner=False)
+def _get_connection():
+    connection = get_conn()
+    init_db(connection)
+    ensure_dirs()
+    return connection
+
+
+conn = _get_connection()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_logs_cached(
+    event_type: Optional[str] = None,
+    thaw_id: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    cell_line_contains: Optional[str] = None,
+) -> pd.DataFrame:
+    rows = query_logs(
+        conn,
+        event_type=event_type,
+        thaw_id=thaw_id,
+        start_date=start_date,
+        end_date=end_date,
+        cell_line_contains=cell_line_contains,
+    )
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_ref_values(kind: str) -> List[str]:
+    try:
+        return get_ref_values(conn, kind)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_usernames() -> List[str]:
+    try:
+        return list_usernames(conn)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_user_rows() -> List[Dict[str, Optional[str]]]:
+    try:
+        return list_users_with_colors(conn)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_thaw_ids() -> List[str]:
+    try:
+        return list_distinct_thaw_ids(conn)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_weekend_rows() -> List[Dict[str, Optional[str]]]:
+    try:
+        return get_weekend_schedule(conn)
+    except Exception:
+        return []
+
+
+def get_logs_df(
+    *,
+    event_type: Optional[str] = None,
+    thaw_id: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    cell_line_contains: Optional[str] = None,
+) -> pd.DataFrame:
+    df = _load_logs_cached(
+        event_type=event_type,
+        thaw_id=thaw_id,
+        start_date=start_date,
+        end_date=end_date,
+        cell_line_contains=cell_line_contains,
+    )
+    return df.copy()
+
+
+def get_ref_values_cached(kind: str) -> List[str]:
+    return list(_cached_ref_values(kind))
+
+
+def get_usernames_cached() -> List[str]:
+    return list(_cached_usernames())
+
+
+def get_users_with_colors_cached() -> List[Dict[str, Optional[str]]]:
+    return list(_cached_user_rows())
+
+
+def get_thaw_ids_cached() -> List[str]:
+    return list(_cached_thaw_ids())
+
+
+def get_weekend_rows_cached() -> List[Dict[str, Optional[str]]]:
+    return list(_cached_weekend_rows())
+
+
+def get_cached_weekend_assignment(target_date: Optional[date]) -> Optional[str]:
+    if not target_date:
+        return None
+    assignment = None
+    for row in _cached_weekend_rows():
+        row_date = row.get("date")
+        if isinstance(row_date, str):
+            try:
+                row_date = datetime.fromisoformat(row_date).date()
+            except ValueError:
+                continue
+        elif isinstance(row_date, datetime):
+            row_date = row_date.date()
+        if row_date == target_date:
+            assignment = row.get("assigned_to")
+            break
+    if isinstance(assignment, str):
+        assignment = assignment.strip() or None
+    return assignment
+
+
+def invalidate_logs_cache() -> None:
+    _load_logs_cached.clear()
+    _cached_thaw_ids.clear()
+
+
+def invalidate_reference_cache() -> None:
+    _cached_ref_values.clear()
+
+
+def invalidate_user_cache() -> None:
+    _cached_usernames.clear()
+    _cached_user_rows.clear()
+
+
+def invalidate_weekend_cache() -> None:
+    _cached_weekend_rows.clear()
 
 # Current user context (for 'Assigned to me' filters)
-try:
-    _usernames_all = list_usernames(conn)
-except Exception:
-    _usernames_all = []
+_usernames_all = get_usernames_cached()
 COLOR_PALETTE = [
     "#4a90e2",
     "#7ed321",
@@ -109,9 +247,10 @@ COLOR_PALETTE = [
 DEFAULT_USER_COLOR = "#4a90e2"
 
 try:
-    _rows_colors = list_users_with_colors(conn)
+    _rows_colors = get_users_with_colors_cached()
     _user_colors = {}
     auto_idx = 0
+    auto_color_assigned = False
     for row in _rows_colors:
         username = (row.get("username") or "").strip()
         color_hex = (row.get("color_hex") or "").strip()
@@ -121,7 +260,10 @@ try:
             auto_color = COLOR_PALETTE[auto_idx % len(COLOR_PALETTE)]
             auto_idx += 1
             update_user_color(conn, username, auto_color)
+            auto_color_assigned = True
             _user_colors[username] = auto_color
+    if auto_color_assigned:
+        invalidate_user_cache()
 except Exception:
     _user_colors = {}
 
@@ -216,13 +358,13 @@ with tab_add:
 
         id_col1, id_col2, id_col3, id_col4 = st.columns([1.7, 1.3, 1.1, 0.9])
         with id_col1:
-            cl_values = get_ref_values(conn, "cell_line")
+            cl_values = get_ref_values_cached("cell_line")
             if cl_values:
                 cell_line = st.selectbox("Cell Line ID *", options=cl_values, key="cell_line_select")
             else:
                 cell_line = st.text_input("Cell Line ID *", value="", placeholder="e.g., BIHi005-A-24")
         with id_col2:
-            evt_values = get_ref_values(conn, "event_type")
+            evt_values = get_ref_values_cached("event_type")
             templ_evt = template_cfg.get("event_type") or ""
             if evt_values:
                 idx_evt = evt_values.index(templ_evt) if templ_evt in evt_values else 0
@@ -280,7 +422,7 @@ with tab_add:
             if split_auto:
                 st.caption(f"Split detected → Passage auto-set to {split_auto}.")
         with row1_col2:
-            vessel_refs = get_ref_values(conn, "vessel")
+            vessel_refs = get_ref_values_cached("vessel")
             vessel_default = prev.get("vessel") if prev and prev.get("vessel") else template_suggests.get("vessel", "")
             if vessel_refs:
                 v_idx = vessel_refs.index(vessel_default) if vessel_default in vessel_refs else 0
@@ -288,7 +430,7 @@ with tab_add:
             else:
                 vessel = st.text_input("Vessel", value=vessel_default, placeholder="e.g., T25, 6-well plate")
         with row1_col3:
-            location_refs = get_ref_values(conn, "location")
+            location_refs = get_ref_values_cached("location")
             default_location = prev.get("location") if prev and prev.get("location") else template_suggests.get("location", "")
             if location_refs:
                 loc_idx = location_refs.index(default_location) if default_location in location_refs else 0
@@ -297,7 +439,7 @@ with tab_add:
                 location = st.text_input("Location", value=default_location, placeholder="e.g., Incubator A, Shelf 2")
         with row1_col4:
             _med_sugs = top_values(conn, "medium", cell_line=cell_line) if cell_line else top_values(conn, "medium")
-            cm_refs = get_ref_values(conn, "culture_medium")
+            cm_refs = get_ref_values_cached("culture_medium")
             default_med = prev.get("medium") if prev and prev.get("medium") else template_suggests.get("medium", "")
             if cm_refs:
                 med_idx = cm_refs.index(default_med) if default_med in cm_refs else 0
@@ -308,7 +450,7 @@ with tab_add:
                 st.caption("Popular: " + ", ".join([str(x) for x in _med_sugs]))
         with row1_col5:
             _ct_sugs = top_values(conn, "cell_type", cell_line=cell_line) if cell_line else top_values(conn, "cell_type")
-            ct_refs = get_ref_values(conn, "cell_type")
+            ct_refs = get_ref_values_cached("cell_type")
             default_ct = prev.get("cell_type") if prev and prev.get("cell_type") else template_suggests.get("cell_type", "")
             if ct_refs:
                 ct_idx = ct_refs.index(default_ct) if default_ct in ct_refs else 0
@@ -336,10 +478,7 @@ with tab_add:
         st.divider()
         sched_col1, sched_col2, sched_col3, sched_col4, sched_col5 = st.columns([1, 1, 1, 1, 1])
         with sched_col1:
-            try:
-                usernames = list_usernames(conn)
-            except Exception:
-                usernames = []
+            usernames = get_usernames_cached()
             if usernames:
                 op_index = 0
                 if st.session_state.get("my_name") and st.session_state["my_name"] in usernames:
@@ -359,15 +498,11 @@ with tab_add:
         with sched_col3:
             next_action_date = st.date_input("Next Action Date", value=default_nad)
         with sched_col4:
-            all_users = []
-            try:
-                all_users = list_usernames(conn)
-            except Exception:
-                all_users = []
+            all_users = get_usernames_cached()
             assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
             weekend_autofill = None
             if next_action_date:
-                weekend_autofill = get_weekend_assignment_for_date(conn, next_action_date)
+                weekend_autofill = get_cached_weekend_assignment(next_action_date)
             assign_index = 0
             if weekend_autofill and weekend_autofill in assigned_options:
                 assign_index = assigned_options.index(weekend_autofill)
@@ -389,7 +524,7 @@ with tab_add:
                 thaw_label = "Select Cell Line + Operator"
             st.text_input("Thaw ID", value=thaw_label, disabled=True, help="Auto-generated when saving.")
         else:
-            thaw_ids = list_distinct_thaw_ids(conn)
+            thaw_ids = get_thaw_ids_cached()
             options = ["(none)"] + thaw_ids if thaw_ids else ["(none)"]
             idx = 0
             if latest_thaw_for_line and latest_thaw_for_line in thaw_ids:
@@ -442,7 +577,7 @@ with tab_add:
             resolved_assignee = None if assigned_to in (None, "(unassigned)") else assigned_to
             auto_assignee_note = None
             if (not resolved_assignee) and next_action_date:
-                weekend_owner = get_weekend_assignment_for_date(conn, next_action_date)
+                weekend_owner = get_cached_weekend_assignment(next_action_date)
                 if weekend_owner:
                     resolved_assignee = weekend_owner
                     auto_assignee_note = weekend_owner
@@ -468,6 +603,7 @@ with tab_add:
                 "created_at": datetime.utcnow().isoformat(),
             }
             insert_log(conn, payload)
+            invalidate_logs_cache()
             st.success("✅ Log entry saved to database!")
             if auto_assignee_note:
                 st.info(f"Assigned to weekend duty: {auto_assignee_note}")
@@ -489,18 +625,28 @@ with tab_history:
         date_filter = st.selectbox("Date range", ["All", "Today", "Last 7 days", "Last 30 days"])
     only_mine = st.checkbox("Assigned to me only", value=False)
 
-    logs = query_logs(
-        conn,
-        user=None,
-        event_type=f_event,
-        thaw_id=None,
-        start_date=None,
-        end_date=None,
+    event_filter = None if f_event == "(any)" else f_event
+    today_value = date.today()
+    start_range = None
+    end_range = None
+    if date_filter == "Today":
+        start_range = today_value
+        end_range = today_value
+    elif date_filter == "Last 7 days":
+        start_range = today_value - timedelta(days=6)
+        end_range = today_value
+    elif date_filter == "Last 30 days":
+        start_range = today_value - timedelta(days=29)
+        end_range = today_value
+
+    df = get_logs_df(
+        event_type=event_filter,
+        start_date=start_range,
+        end_date=end_range,
         cell_line_contains=f_cell or None,
     )
 
-    if logs:
-        df = pd.DataFrame(logs)
+    if not df.empty:
         if f_assigned:
             df = df[df.get("assigned_to", "").astype(str).str.contains(f_assigned, case=False, na=False)]
         if f_operator != "(any)" and "operator" in df.columns:
@@ -509,16 +655,6 @@ with tab_history:
             df = df[df.get("assigned_to", "").astype(str) == st.session_state["my_name"]]
         elif only_mine and not st.session_state.get("my_name"):
             st.info("Set 'My name' at the top to enable 'Assigned to me'.")
-        if date_filter != "All":
-            df["_date"] = pd.to_datetime(df["date"], errors="coerce")
-            today_dt = pd.to_datetime(date.today())
-            if date_filter == "Today":
-                df = df[df["_date"] == today_dt]
-            elif date_filter == "Last 7 days":
-                df = df[df["_date"] >= today_dt - pd.Timedelta(days=6)]
-            elif date_filter == "Last 30 days":
-                df = df[df["_date"] >= today_dt - pd.Timedelta(days=29)]
-            df = df.drop(columns=["_date"])
         display_cols = [
             "date",
             "cell_line",
@@ -636,6 +772,8 @@ with tab_history:
                             pending_updates.append((row_id, updates))
                     for row_id, updates in pending_updates:
                         update_log_fields(conn, int(row_id), updates)
+                    if pending_updates:
+                        invalidate_logs_cache()
                     st.success("History updated.")
                 except Exception as exc:
                     st.error(f"Failed to save history updates: {exc}")
@@ -662,11 +800,10 @@ with tab_history:
             export_date = st.date_input("Day to summarize", value=date.today(), key="lab_book_date")
             operator_opts = ["(any)"] + _usernames_all if _usernames_all else ["(any)"]
             export_operator = st.selectbox("Operator filter", operator_opts, key="lab_book_operator")
-            export_logs = query_logs(conn, start_date=export_date, end_date=export_date)
-            if not export_logs:
+            export_df = get_logs_df(start_date=export_date, end_date=export_date)
+            if export_df.empty:
                 st.info("No entries for that date.")
             else:
-                export_df = pd.DataFrame(export_logs)
                 if export_operator != "(any)":
                     export_df = export_df[export_df.get("operator") == export_operator]
                 if export_df.empty:
@@ -706,10 +843,10 @@ with tab_history:
 
 with tab_thaw:
     st.subheader("🧊 Thaw Event Timeline")
-    thaw_ids_list = list_distinct_thaw_ids(conn)
+    thaw_ids_list = get_thaw_ids_cached()
     selected_tid = st.selectbox("Select Thaw ID", options=["(choose)"] + thaw_ids_list if thaw_ids_list else ["(none)"])
     if thaw_ids_list and selected_tid not in ("(choose)", "(none)"):
-        timeline = pd.DataFrame(query_logs(conn, thaw_id=selected_tid))
+        timeline = get_logs_df(thaw_id=selected_tid)
         if not timeline.empty:
             timeline = timeline.sort_values(by=["date"]).reset_index(drop=True)
             tcols = [
@@ -751,8 +888,7 @@ with tab_thaw:
 with tab_dashboard:
     st.subheader("📅 Team Dashboard")
     dash_only_mine = st.checkbox("Show only items assigned to me", value=False)
-    all_logs = query_logs(conn)
-    df_all = pd.DataFrame(all_logs) if all_logs else pd.DataFrame([])
+    df_all = get_logs_df()
     if df_all.empty:
         st.info("No entries yet — add a log to unlock the dashboard.")
     else:
@@ -784,7 +920,7 @@ with tab_dashboard:
             coverage.append(
                 {
                     "date": d,
-                    "assignee": get_weekend_assignment_for_date(conn, d),
+                    "assignee": get_cached_weekend_assignment(d),
                 }
             )
         coverage_lines = "\n".join(
@@ -885,8 +1021,7 @@ with tab_dashboard:
 
 with tab_run:
     st.subheader("🧪 Weekend Run Sheet")
-    all_logs = query_logs(conn)
-    df_tasks = pd.DataFrame(all_logs) if all_logs else pd.DataFrame([])
+    df_tasks = get_logs_df()
     if df_tasks.empty:
         st.info("No tasks yet.")
     else:
@@ -1040,6 +1175,7 @@ with tab_run:
                     else:
                         try:
                             bulk_update_logs(conn, changes)
+                            invalidate_logs_cache()
                             st.success("Updates saved.")
                         except Exception as exc:
                             st.error(f"Failed to save: {exc}")
@@ -1086,6 +1222,7 @@ with tab_scheduler:
                     None if sched_user in (None, "(none)") else sched_user,
                     None,
                 )
+                invalidate_weekend_cache()
                 st.success(f"Assigned {len(duty_dates)} date(s).")
             else:
                 st.error("Pick a weekend date.")
@@ -1094,11 +1231,12 @@ with tab_scheduler:
             if duty_dates:
                 for d in duty_dates:
                     delete_weekend_assignment(conn, d)
+                invalidate_weekend_cache()
                 st.success("Selected weekends cleared.")
             else:
                 st.error("Pick a weekend date to remove.")
 
-    schedule_rows = get_weekend_schedule(conn)
+    schedule_rows = get_weekend_rows_cached()
     if schedule_rows:
         sched_df = pd.DataFrame(schedule_rows)
         sched_df["date"] = pd.to_datetime(sched_df["date"], errors="coerce")
@@ -1163,6 +1301,7 @@ with tab_scheduler:
             st.caption("Update assignments inline, mark rows for removal, then save.")
             if st.button("Save scheduler changes", key="sched_editor_save"):
                 try:
+                    changed = False
                     for _, row in edited_sched.iterrows():
                         raw_date = row["Weekend"]
                         if pd.isna(raw_date):
@@ -1171,6 +1310,7 @@ with tab_scheduler:
                         date_key = day.isoformat()
                         if row.get("Remove"):
                             delete_weekend_assignment(conn, date_key)
+                            changed = True
                             continue
                         new_assignee = row["Assigned To"]
                         normalized_assignee = None if new_assignee in (None, "", "(unassigned)") else new_assignee
@@ -1182,6 +1322,9 @@ with tab_scheduler:
                                 normalized_assignee,
                                 orig.get("notes"),
                             )
+                            changed = True
+                    if changed:
+                        invalidate_weekend_cache()
                     st.success("Scheduler updated.")
                 except Exception as exc:
                     st.error(f"Failed to save scheduler changes: {exc}")
@@ -1203,7 +1346,7 @@ with tab_settings:
     manage_kind = _kind_map.get(manage_kind_label)
 
     if manage_kind_label != "Operators":
-        existing_vals = get_ref_values(conn, manage_kind)
+        existing_vals = get_ref_values_cached(manage_kind)
         st.write(f"Current {manage_kind_label} ({len(existing_vals)}):")
         if existing_vals:
             st.dataframe(pd.DataFrame({"Name": existing_vals}), width='stretch')
@@ -1218,11 +1361,12 @@ with tab_settings:
                 st.warning("Enter a name to add.")
             else:
                 add_ref_value(conn, manage_kind, new_val.strip())
+                invalidate_reference_cache()
                 st.success("Added.")
                 st.rerun()
 
         st.markdown("### Rename")
-        existing_vals = get_ref_values(conn, manage_kind)
+        existing_vals = get_ref_values_cached(manage_kind)
         if existing_vals:
             old_val = st.selectbox("Select existing", options=existing_vals, key=f"rename_src_{manage_kind_label}")
             new_name = st.text_input("New name", key=f"rename_dst_{manage_kind_label}")
@@ -1231,19 +1375,21 @@ with tab_settings:
                     st.warning("Enter a new name.")
                 else:
                     rename_ref_value(conn, manage_kind, old_val, new_name)
+                    invalidate_reference_cache()
                     st.success("Renamed.")
                     st.rerun()
         else:
             st.info("Nothing to rename.")
 
         st.markdown("### Delete")
-        existing_vals = get_ref_values(conn, manage_kind)
+        existing_vals = get_ref_values_cached(manage_kind)
         if existing_vals:
             del_val = st.selectbox("Select to delete", options=existing_vals, key=f"del_{manage_kind_label}")
             confirm = st.checkbox("I understand this will remove the value", key=f"confirm_del_{manage_kind_label}")
             if st.button("Delete", key=f"btn_del_{manage_kind_label}"):
                 if confirm:
                     delete_ref_value(conn, manage_kind, del_val)
+                    invalidate_reference_cache()
                     st.success("Deleted.")
                     st.rerun()
                 else:
@@ -1253,7 +1399,7 @@ with tab_settings:
     else:
         # Operators management
         try:
-            ops_raw = list_users_with_colors(conn)
+            ops_raw = get_users_with_colors_cached()
             ops = [
                 (
                     row.get("username"),
@@ -1287,6 +1433,7 @@ with tab_settings:
                     new_display.strip() if new_display else None,
                     new_color,
                 )
+                invalidate_user_cache()
                 st.success("Operator added.")
                 st.rerun()
 
@@ -1298,12 +1445,13 @@ with tab_settings:
             updated_color = st.color_picker("Color", value=current_color, key="color_operator_value")
             if st.button("Save color", key="btn_update_color"):
                 update_user_color(conn, color_user, updated_color)
+                invalidate_user_cache()
                 st.success("Color updated.")
                 st.rerun()
 
         st.markdown("### Delete Operator")
         try:
-            ops2 = list_usernames(conn)
+            ops2 = get_usernames_cached()
         except Exception:
             ops2 = []
         if ops2:
@@ -1312,6 +1460,7 @@ with tab_settings:
             if st.button("Delete Operator", key="btn_del_operator"):
                 if confirm_op:
                     delete_user(conn, del_op)
+                    invalidate_user_cache()
                     st.success("Operator deleted.")
                     st.rerun()
                 else:
