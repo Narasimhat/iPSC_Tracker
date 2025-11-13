@@ -193,6 +193,12 @@ def get_weekend_rows_cached() -> List[Dict[str, Optional[str]]]:
     return list(_cached_weekend_rows())
 
 
+def _trigger_rerun() -> None:
+    rerun_fn = getattr(st, "experimental_rerun", None) or getattr(st, "rerun", None)
+    if rerun_fn:
+        rerun_fn()
+
+
 def get_cached_weekend_assignment(target_date: Optional[date]) -> Optional[str]:
     if not target_date:
         return None
@@ -592,7 +598,7 @@ with tab_add:
                     if latest_record:
                         st.session_state["pending_thaw_autofill"] = latest_record
                         st.session_state["pending_thaw_autofill_id"] = linked_thaw_id
-                        st.experimental_rerun()
+                        _trigger_rerun()
                     else:
                         st.info("No prior entries found for this Thaw ID to copy.")
             else:
