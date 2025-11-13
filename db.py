@@ -12,7 +12,7 @@ DATA_ROOT = os.environ.get("DATA_ROOT", os.path.dirname(__file__))
 IMAGES_DIR = os.path.join(DATA_ROOT, "images")
 
 _SNOWFLAKE_KEYS = ("account", "user", "password", "warehouse", "database", "schema", "role")
-_WEEKEND_RANGE_FLAGS: Optional[Dict[str, bool]] = None
+_WEEKEND_SCHEDULE_FLAGS: Optional[Dict[str, bool]] = None
 
 
 def ensure_dirs() -> None:
@@ -95,14 +95,15 @@ def _table_has_column(conn, table: str, column: str) -> bool:
         return cur.fetchone() is not None
 
 
-def _weekend_range_column_flags(conn) -> Dict[str, bool]:
-    global _WEEKEND_RANGE_FLAGS
-    if _WEEKEND_RANGE_FLAGS is None:
-        _WEEKEND_RANGE_FLAGS = {
+def _weekend_schedule_column_flags(conn) -> Dict[str, bool]:
+    global _WEEKEND_SCHEDULE_FLAGS
+    if _WEEKEND_SCHEDULE_FLAGS is None:
+        _WEEKEND_SCHEDULE_FLAGS = {
             "start_date": _table_has_column(conn, "WEEKEND_SCHEDULE", "START_DATE"),
             "end_date": _table_has_column(conn, "WEEKEND_SCHEDULE", "END_DATE"),
+            "assignee": _table_has_column(conn, "WEEKEND_SCHEDULE", "ASSIGNEE"),
         }
-    return _WEEKEND_RANGE_FLAGS
+    return _WEEKEND_SCHEDULE_FLAGS
 
 
 def init_db(conn) -> None:
@@ -613,30 +614,36 @@ def get_weekend_schedule(conn) -> List[Dict[str, Any]]:
 
 
 def upsert_weekend_assignment(conn, dates: List[str], assigned_to: Optional[str], notes: Optional[str]) -> None:
-    range_flags = _weekend_range_column_flags(conn)
+    flags = _weekend_schedule_column_flags(conn)
     for date_str in dates:
         with closing(conn.cursor()) as cur:
+            update_sets = ["assigned_to = %s", "notes = %s", "updated_at = CURRENT_TIMESTAMP()"]
+            update_params: List[Any] = [assigned_to, notes]
+            if flags.get("assignee"):
+                update_sets.insert(1, "assignee = %s")
+                update_params.insert(1, assigned_to or "")
             cur.execute(
-                """
+                f"""
                 UPDATE weekend_schedule
-                SET assigned_to = %s,
-                    notes = %s,
-                    updated_at = CURRENT_TIMESTAMP()
+                SET {', '.join(update_sets)}
                 WHERE date = %s
                 """,
-                (assigned_to, notes, date_str),
+                (*update_params, date_str),
             )
             if cur.rowcount == 0:
                 insert_cols = ["date"]
                 insert_vals: List[Any] = [date_str]
-                if range_flags.get("start_date"):
+                if flags.get("start_date"):
                     insert_cols.append("start_date")
                     insert_vals.append(date_str)
-                if range_flags.get("end_date"):
+                if flags.get("end_date"):
                     insert_cols.append("end_date")
                     insert_vals.append(date_str)
                 insert_cols.extend(["assigned_to", "notes"])
                 insert_vals.extend([assigned_to, notes])
+                if flags.get("assignee"):
+                    insert_cols.append("assignee")
+                    insert_vals.append(assigned_to or "")
                 cols_sql = ", ".join(insert_cols + ["updated_at"])
                 placeholders = ", ".join(["%s"] * len(insert_vals) + ["CURRENT_TIMESTAMP()"])
                 cur.execute(
