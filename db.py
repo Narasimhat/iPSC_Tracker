@@ -121,6 +121,7 @@ def init_db(conn) -> None:
                 date DATE NOT NULL,
                 cell_line VARCHAR,
                 event_type VARCHAR,
+                action_label VARCHAR,
                 passage NUMBER,
                 vessel VARCHAR,
                 location VARCHAR,
@@ -207,6 +208,7 @@ def init_db(conn) -> None:
 
         cur.execute("ALTER TABLE logs ADD COLUMN IF NOT EXISTS cryo_storage_position VARCHAR")
         cur.execute("ALTER TABLE logs ADD COLUMN IF NOT EXISTS image_path VARCHAR")
+        cur.execute("ALTER TABLE logs ADD COLUMN IF NOT EXISTS action_label VARCHAR")
 
     # Seed reference defaults
     now = datetime.utcnow()
@@ -345,6 +347,7 @@ def insert_log(conn, payload: Dict[str, Any]) -> int:
         "date",
         "cell_line",
         "event_type",
+        "action_label",
         "passage",
         "vessel",
         "location",

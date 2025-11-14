@@ -256,6 +256,17 @@ COLOR_PALETTE = [
     "#417505",
 ]
 DEFAULT_USER_COLOR = "#4a90e2"
+ACTION_LABELS = [
+    "Media Change",
+    "Split",
+    "Freeze",
+    "Thaw",
+    "Observation",
+    "Cryopreservation",
+    "Harvest",
+    "QC Review",
+    "Other",
+]
 
 try:
     _rows_colors = get_users_with_colors_cached()
@@ -323,10 +334,13 @@ def _apply_form_prefill(payload: Dict[str, Any]) -> None:
         "notes": ["notes_input"],
         "operator": ["operator_select"],
         "assigned_to": ["assigned_select"],
+        "action_label": ["action_label_select"],
     }
     for source, keys in field_map.items():
         value = payload.get(source)
         if value in (None, ""):
+            if source == "action_label":
+                st.session_state["action_label_select"] = "(none)"
             continue
         for key in keys:
             st.session_state[key] = value
@@ -393,6 +407,7 @@ def _prefill_payload_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "assigned_to",
         "cryo_vial_position",
         "thaw_id",
+        "action_label",
     ]:
         value = row.get(field)
         if value not in (None, ""):
@@ -421,6 +436,7 @@ def _build_template_payload(
     assigned_to: Optional[str],
     cryo_vial_position: Optional[str],
     next_action_date: Optional[date],
+    action_label: Optional[str],
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
     for key, value in [
@@ -436,6 +452,7 @@ def _build_template_payload(
         ("operator", operator),
         ("assigned_to", assigned_to),
         ("cryo_vial_position", cryo_vial_position),
+        ("action_label", action_label),
     ]:
         if value not in (None, ""):
             payload[key] = value
@@ -699,6 +716,12 @@ with tab_add:
             assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index, key="assigned_select")
             if weekend_autofill:
                 st.caption(f"Weekend duty auto-selected: {weekend_autofill}")
+            action_label_choice = st.selectbox(
+                "Action Label",
+                options=["(none)"] + ACTION_LABELS,
+                index=0,
+                key="action_label_select",
+            )
         with sched_col5:
             st.empty()
         thaw_preview = ""
@@ -786,10 +809,13 @@ with tab_add:
                     resolved_assignee = weekend_owner
                     auto_assignee_note = weekend_owner
 
+            resolved_action_label = None if action_label_choice in (None, "(none)") else action_label_choice
+
             payload = {
                 "date": log_date.isoformat(),
                 "cell_line": cell_line,
                 "event_type": event_type,
+                "action_label": resolved_action_label,
                 "passage": final_passage,
                 "vessel": vessel,
                 "location": location,
@@ -889,6 +915,7 @@ with tab_add:
                         assigned_to=None if assigned_to in (None, "(unassigned)") else assigned_to,
                         cryo_vial_position=cryo_vial_position,
                         next_action_date=next_action_date,
+                        action_label=resolved_action_label,
                     )
                     save_entry_template(conn, template_name_input.strip(), template_payload)
                     st.success("Template saved.")
@@ -962,6 +989,7 @@ with tab_history:
             "date",
             "cell_line",
             "event_type",
+            "action_label",
             "passage",
             "vessel",
             "location",
@@ -990,6 +1018,7 @@ with tab_history:
             "date": "Date",
             "cell_line": "Cell Line",
             "event_type": "Event Type",
+            "action_label": "Action Label",
             "passage": "Passage",
             "vessel": "Vessel",
             "location": "Location",
@@ -1023,6 +1052,7 @@ with tab_history:
                     "Date": st.column_config.DateColumn(),
                     "Next Action Date": st.column_config.DateColumn(),
                     "Assigned To": st.column_config.SelectboxColumn(options=["(unassigned)"] + _usernames_all if _usernames_all else ["(unassigned)"]),
+                    "Action Label": st.column_config.SelectboxColumn(options=["(none)"] + ACTION_LABELS),
                     "Passage": st.column_config.NumberColumn(step=1),
                     "Volume (mL)": st.column_config.NumberColumn(step=0.5),
                     "Mark Done": st.column_config.CheckboxColumn(),
@@ -1042,6 +1072,7 @@ with tab_history:
                             ("Date","date"),
                             ("Cell Line","cell_line"),
                             ("Event Type","event_type"),
+                            ("Action Label","action_label"),
                             ("Passage","passage"),
                             ("Vessel","vessel"),
                             ("Location","location"),
@@ -1057,6 +1088,8 @@ with tab_history:
                         ]:
                             val = row[col]
                             if col in ("Assigned To",) and (val in (None,"(unassigned)")):
+                                val = None
+                            if col == "Action Label" and (val in (None, "(none)")):
                                 val = None
                             if col in ("Date","Next Action Date") and pd.notna(val):
                                 val = pd.to_datetime(val).date().isoformat()
@@ -1199,6 +1232,8 @@ with tab_dashboard:
             df_all["assigned_to"] = ""
         if "next_action_date" not in df_all.columns:
             df_all["next_action_date"] = None
+        if "action_label" not in df_all.columns:
+            df_all["action_label"] = ""
         if "created_at" not in df_all.columns:
             df_all["created_at"] = ""
         today_dt = pd.to_datetime(date.today())
@@ -1249,9 +1284,10 @@ with tab_dashboard:
                 st.info("No overdue items.")
             else:
                 st.dataframe(
-                    df_overdue[["cell_line", "event_type", "assigned_to", "next_action_date", "notes"]].rename(columns={
+                    df_overdue[["cell_line", "event_type", "action_label", "assigned_to", "next_action_date", "notes"]].rename(columns={
                         "cell_line": "Cell Line",
                         "event_type": "Event Type",
+                        "action_label": "Action Label",
                         "assigned_to": "Assigned To",
                         "next_action_date": "Next Action Date",
                         "notes": "Notes",
@@ -1264,9 +1300,10 @@ with tab_dashboard:
                 st.info("No upcoming items.")
             else:
                 st.dataframe(
-                    df_upcoming[["cell_line", "event_type", "assigned_to", "next_action_date", "notes"]].rename(columns={
+                    df_upcoming[["cell_line", "event_type", "action_label", "assigned_to", "next_action_date", "notes"]].rename(columns={
                         "cell_line": "Cell Line",
                         "event_type": "Event Type",
+                        "action_label": "Action Label",
                         "assigned_to": "Assigned To",
                         "next_action_date": "Next Action Date",
                         "notes": "Notes",
@@ -1280,9 +1317,10 @@ with tab_dashboard:
             if not my_queue.empty:
                 st.markdown("**My queue**")
                 st.dataframe(
-                    my_queue[["cell_line", "event_type", "next_action_date", "notes"]].rename(columns={
+                    my_queue[["cell_line", "event_type", "action_label", "next_action_date", "notes"]].rename(columns={
                         "cell_line": "Cell Line",
                         "event_type": "Event Type",
+                        "action_label": "Action Label",
                         "next_action_date": "Next Action Date",
                         "notes": "Notes",
                     }),
@@ -1294,9 +1332,10 @@ with tab_dashboard:
         if not unassigned.empty:
             st.markdown("**Needs owner**")
             st.dataframe(
-                unassigned[["cell_line", "event_type", "next_action_date", "notes"]].rename(columns={
+                unassigned[["cell_line", "event_type", "action_label", "next_action_date", "notes"]].rename(columns={
                     "cell_line": "Cell Line",
                     "event_type": "Event Type",
+                    "action_label": "Action Label",
                     "next_action_date": "Next Action Date",
                     "notes": "Notes",
                 }),
@@ -1309,9 +1348,10 @@ with tab_dashboard:
             recent["_created_at"] = pd.to_datetime(recent["created_at"], errors="coerce")
             recent["Logged"] = recent["_created_at"].dt.strftime("%Y-%m-%d %H:%M")
             st.dataframe(
-                recent[["Logged", "cell_line", "event_type", "operator", "assigned_to", "notes"]].rename(columns={
+                recent[["Logged", "cell_line", "event_type", "action_label", "operator", "assigned_to", "notes"]].rename(columns={
                     "cell_line": "Cell Line",
                     "event_type": "Event Type",
+                    "action_label": "Action Label",
                     "operator": "Operator",
                     "assigned_to": "Assigned To",
                     "notes": "Notes",
@@ -1331,6 +1371,7 @@ with tab_run:
         ensure_cols = {
             "assigned_to": "",
             "next_action_date": None,
+            "action_label": "",
             "medium": "",
             "location": "",
             "event_type": "",
@@ -1406,10 +1447,11 @@ with tab_run:
             df_tasks["Location"] = df_tasks["location"].fillna("")
             df_tasks["Medium"] = df_tasks["medium"].fillna("")
             df_tasks["done"] = df_tasks["next_action_date"] < today_start
-            run_cols_display = df_tasks[["id","cell_line","event_type","done","vessel","Location","Medium","cell_type","volume","assigned_to","next_action_date","notes"]].rename(columns={
+            run_cols_display = df_tasks[["id","cell_line","event_type","action_label","done","vessel","Location","Medium","cell_type","volume","assigned_to","next_action_date","notes"]].rename(columns={
                 "id":"ID",
                 "cell_line":"Cell Line",
                 "event_type":"Event",
+                "action_label":"Action Label",
                 "done":"Mark Done",
                 "vessel":"Vessel",
                 "cell_type":"Cell Type",
@@ -1434,6 +1476,7 @@ with tab_run:
                         "ID": st.column_config.Column(disabled=True),
                         "Cell Line": st.column_config.Column(disabled=True),
                         "Event": st.column_config.Column(disabled=True),
+                        "Action Label": st.column_config.SelectboxColumn(options=["(none)"] + ACTION_LABELS),
                         "Mark Done": st.column_config.CheckboxColumn(),
                         "Vessel": st.column_config.Column(disabled=False),
                         "Location": st.column_config.Column(disabled=False),
@@ -1464,6 +1507,8 @@ with tab_run:
                                 payload["volume"] = row["Volume (mL)"]
                             if orig.get("assigned_to","") != row["Assigned To"]:
                                 payload["assigned_to"] = None if not row["Assigned To"] or row["Assigned To"] == "(unassigned)" else row["Assigned To"]
+                            if orig.get("action_label","") != row["Action Label"]:
+                                payload["action_label"] = None if row["Action Label"] in (None, "(none)") else row["Action Label"]
                             if row["Mark Done"]:
                                 payload["next_action_date"] = None
                             elif str(orig.get("next_action_date")) != str(row["Next Action"]):
