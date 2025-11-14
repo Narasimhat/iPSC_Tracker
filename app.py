@@ -703,25 +703,28 @@ with tab_add:
         with sched_col3:
             next_action_date = st.date_input("Next Action Date", value=default_nad, key="next_action_date_input")
         with sched_col4:
-            all_users = get_usernames_cached()
-            assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
-            weekend_autofill = None
-            if next_action_date:
-                weekend_autofill = get_cached_weekend_assignment(next_action_date)
-            assign_index = 0
-            if weekend_autofill and weekend_autofill in assigned_options:
-                assign_index = assigned_options.index(weekend_autofill)
-            elif st.session_state.get("my_name") and st.session_state["my_name"] in assigned_options:
-                assign_index = assigned_options.index(st.session_state["my_name"])
-            assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index, key="assigned_select")
-            if weekend_autofill:
-                st.caption(f"Weekend duty auto-selected: {weekend_autofill}")
-            action_label_choice = st.selectbox(
-                "Action Label",
-                options=["(none)"] + ACTION_LABELS,
-                index=0,
-                key="action_label_select",
-            )
+            assign_col, action_col = st.columns([2, 1])
+            with assign_col:
+                all_users = get_usernames_cached()
+                assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
+                weekend_autofill = None
+                if next_action_date:
+                    weekend_autofill = get_cached_weekend_assignment(next_action_date)
+                assign_index = 0
+                if weekend_autofill and weekend_autofill in assigned_options:
+                    assign_index = assigned_options.index(weekend_autofill)
+                elif st.session_state.get("my_name") and st.session_state["my_name"] in assigned_options:
+                    assign_index = assigned_options.index(st.session_state["my_name"])
+                assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index, key="assigned_select")
+                if weekend_autofill:
+                    st.caption(f"Weekend duty auto-selected: {weekend_autofill}")
+            with action_col:
+                action_label_choice = st.selectbox(
+                    "Action Label",
+                    options=["(none)"] + ACTION_LABELS,
+                    index=0,
+                    key="action_label_select",
+                )
         with sched_col5:
             st.empty()
         thaw_preview = ""
