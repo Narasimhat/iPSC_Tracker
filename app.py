@@ -708,7 +708,7 @@ with tab_add:
         with sched_col3:
             next_action_date = st.date_input("Next Action Date", value=default_nad, key="next_action_date_input")
         with sched_col4:
-            assign_col, action_col = st.columns([2, 1])
+            assign_col, action_col = st.columns([3, 2])
             with assign_col:
                 all_users = get_usernames_cached()
                 assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
@@ -729,6 +729,7 @@ with tab_add:
                     options=["(none)"] + ACTION_LABELS,
                     index=0,
                     key="action_label_select",
+                    help="Categorize the follow-up action.",
                 )
         with sched_col5:
             st.empty()
