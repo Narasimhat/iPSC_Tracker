@@ -733,44 +733,43 @@ with tab_add:
                 )
         with sched_col5:
             st.empty()
-        thaw_preview = ""
-        linked_thaw_id = ""
+        thaw_ids = get_thaw_ids_cached()
         latest_thaw_for_line = get_last_thaw_id(conn, cell_line) if cell_line else None
+        thaw_select_help = "Associate this entry with a thaw history."
+        thaw_special_auto = "(auto-generate new)"
+        thaw_special_none = "(none)"
+        thaw_options: List[str]
+        thaw_index = 0
         if event_type == "Thawing":
-            _clear_active_form_prefill(kind="thaw")
-            if cell_line and operator:
-                thaw_preview = generate_thaw_id(conn, cell_line, operator, log_date)
-                thaw_label = thaw_preview
-            else:
-                thaw_label = "Select Cell Line + Operator"
-            st.text_input("Thaw ID", value=thaw_label, disabled=True, help="Auto-generated when saving.")
+            thaw_options = [thaw_special_auto] + (thaw_ids or [])
+            thaw_select_help = "Select an existing thaw ID or auto-generate a new one."
         else:
-            thaw_ids = get_thaw_ids_cached()
-            options = ["(none)"] + thaw_ids if thaw_ids else ["(none)"]
-            idx = 0
+            thaw_options = [thaw_special_none] + (thaw_ids or [])
             if latest_thaw_for_line and latest_thaw_for_line in thaw_ids:
-                idx = options.index(latest_thaw_for_line)
-            linked_thaw_id = st.selectbox(
-                "Link Thaw ID",
-                options=options,
-                index=idx,
-                help="Associate with an existing thaw event (required for follow-ups).",
-                key="linked_thaw_select",
-            )
-            active_meta = st.session_state.get("active_form_prefill_meta") or {}
-            active_thaw_id = active_meta.get("label") if active_meta.get("kind") == "thaw" else None
-            if linked_thaw_id and linked_thaw_id not in ("(none)",):
-                if active_thaw_id == linked_thaw_id:
-                    st.caption(f"Fields prefilled from thaw {linked_thaw_id}.")
-                else:
-                    latest_record = get_latest_log_for_thaw(conn, linked_thaw_id)
-                    if latest_record:
-                        _queue_form_prefill(latest_record, meta={"kind": "thaw", "label": linked_thaw_id})
-                        _trigger_rerun()
-                    else:
-                        st.info("No prior entries found for this Thaw ID to copy.")
+                thaw_index = thaw_options.index(latest_thaw_for_line)
+            thaw_select_help = "Associate with an existing thaw event (required for follow-ups)."
+
+        linked_thaw_id = st.selectbox(
+            "Thaw ID",
+            options=thaw_options,
+            index=thaw_index,
+            help=thaw_select_help,
+            key="linked_thaw_select",
+        )
+        active_meta = st.session_state.get("active_form_prefill_meta") or {}
+        active_thaw_id = active_meta.get("label") if active_meta.get("kind") == "thaw" else None
+        if linked_thaw_id not in (thaw_special_none, thaw_special_auto):
+            if active_thaw_id == linked_thaw_id:
+                st.caption(f"Fields prefilled from thaw {linked_thaw_id}.")
             else:
-                _clear_active_form_prefill(kind="thaw")
+                latest_record = get_latest_log_for_thaw(conn, linked_thaw_id)
+                if latest_record:
+                    _queue_form_prefill(latest_record, meta={"kind": "thaw", "label": linked_thaw_id})
+                    _trigger_rerun()
+                else:
+                    st.info("No prior entries found for this Thaw ID to copy.")
+        else:
+            _clear_active_form_prefill(kind="thaw")
 
         submitted = st.form_submit_button("Save Entry", disabled=not form_ready)
         if submitted:
@@ -790,7 +789,7 @@ with tab_add:
             if event_type == "Thawing" and _is_blank(cryo_vial_position):
                 missing_labels.append("Cryo Vial Position")
             if event_type != "Thawing":
-                if not linked_thaw_id or linked_thaw_id == "(none)":
+                if not linked_thaw_id or linked_thaw_id == thaw_special_none:
                     missing_labels.append("Linked Thaw ID")
             if _is_blank(operator):
                 missing_labels.append("Operator")
@@ -800,11 +799,13 @@ with tab_add:
             if next_action_date and next_action_date < date.today():
                 st.error("Next Action Date cannot be in the past.")
                 st.stop()
-            thaw_id_val = ""
             if event_type == "Thawing":
-                thaw_id_val = generate_thaw_id(conn, cell_line, operator, log_date)
+                if linked_thaw_id and linked_thaw_id not in (thaw_special_auto, thaw_special_none):
+                    thaw_id_val = linked_thaw_id
+                else:
+                    thaw_id_val = generate_thaw_id(conn, cell_line, operator, log_date)
             else:
-                thaw_id_val = linked_thaw_id if linked_thaw_id and linked_thaw_id != "(none)" else ""
+                thaw_id_val = linked_thaw_id if linked_thaw_id and linked_thaw_id != thaw_special_none else ""
 
             final_passage = int(passage_no) if passage_no else None
             if event_type == "Split" and split_auto:
