@@ -708,8 +708,8 @@ with tab_add:
         with sched_col3:
             next_action_date = st.date_input("Next Action Date", value=default_nad, key="next_action_date_input")
         with sched_col4:
-            assign_col, action_col = st.columns([3, 2])
-            with assign_col:
+            combined = st.columns([3, 2])
+            with combined[0]:
                 all_users = get_usernames_cached()
                 assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
                 weekend_autofill = None
@@ -723,7 +723,7 @@ with tab_add:
                 assigned_to = st.selectbox("Assigned To", options=assigned_options, index=assign_index, key="assigned_select")
                 if weekend_autofill:
                     st.caption(f"Weekend duty auto-selected: {weekend_autofill}")
-            with action_col:
+            with combined[1]:
                 action_label_choice = st.selectbox(
                     "Action Label",
                     options=["(none)"] + ACTION_LABELS,
