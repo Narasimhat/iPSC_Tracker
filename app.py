@@ -477,7 +477,12 @@ def _text_input_stateful(label: str, *, key: str, default: str = "", **kwargs):
         return st.text_input(label, key=key, **kwargs)
     return st.text_input(label, value=default, key=key, **kwargs)
 my_name = st.selectbox("My name", options=["(none)"] + _usernames_all if _usernames_all else ["(none)"], index=0, help="Used for 'Assigned to me' filters")
-st.session_state["my_name"] = None if my_name == "(none)" else my_name
+normalized_my_name = None if my_name == "(none)" else my_name
+if st.session_state.get("my_name") != normalized_my_name:
+    st.session_state["my_name"] = normalized_my_name
+    st.session_state["operator_select"] = normalized_my_name or st.session_state.get("operator_select")
+    if normalized_my_name:
+        st.session_state["assigned_select"] = normalized_my_name
 
 tab_add, tab_history, tab_thaw, tab_dashboard, tab_run, tab_scheduler, tab_settings = st.tabs([
     "Add Entry",
