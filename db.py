@@ -608,7 +608,10 @@ def get_latest_log_for_thaw(conn, thaw_id: str) -> Optional[Dict[str, Any]]:
         SELECT *
         FROM logs
         WHERE thaw_id = %s
-        ORDER BY date DESC, created_at DESC
+        ORDER BY
+            CASE WHEN event_type = 'Thawing' THEN 0 ELSE 1 END,
+            date DESC,
+            created_at DESC
         LIMIT 1
         """,
         (thaw_id,),
