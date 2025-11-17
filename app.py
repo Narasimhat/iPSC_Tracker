@@ -708,7 +708,7 @@ with tab_add:
         with sched_col3:
             next_action_date = st.date_input("Next Action Date", value=default_nad, key="next_action_date_input")
         with sched_col4:
-            combined = st.columns([3, 2])
+            combined = st.columns([2, 3])
             with combined[0]:
                 all_users = get_usernames_cached()
                 assigned_options = ["(unassigned)"] + all_users if all_users else ["(unassigned)"]
