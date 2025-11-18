@@ -733,45 +733,51 @@ with tab_add:
                 )
         with sched_col5:
             st.empty()
-        thaw_ids = get_thaw_ids_cached()
-        latest_thaw_for_line = get_last_thaw_id(conn, cell_line) if cell_line else None
-        thaw_select_help = "Associate this entry with a thaw history."
-        thaw_special_auto = "(auto-generate new)"
-        thaw_special_none = "(none)"
-        thaw_options: List[str]
-        thaw_index = 0
-        if event_type == "Thawing":
-            thaw_options = [thaw_special_auto] + (thaw_ids or [])
-            thaw_select_help = "Select an existing thaw ID or auto-generate a new one."
-        else:
-            thaw_options = [thaw_special_none] + (thaw_ids or [])
-            if latest_thaw_for_line and latest_thaw_for_line in thaw_ids:
-                thaw_index = thaw_options.index(latest_thaw_for_line)
-            thaw_select_help = "Associate with an existing thaw event (required for follow-ups)."
+        thaw_select_placeholder = st.empty()
 
-        linked_thaw_id = st.selectbox(
-            "Thaw ID",
-            options=thaw_options,
-            index=thaw_index,
-            help=thaw_select_help,
-            key="linked_thaw_select",
-        )
-        active_meta = st.session_state.get("active_form_prefill_meta") or {}
-        active_thaw_id = active_meta.get("label") if active_meta.get("kind") == "thaw" else None
-        if linked_thaw_id not in (thaw_special_none, thaw_special_auto):
-            if active_thaw_id == linked_thaw_id:
-                st.caption(f"Fields prefilled from thaw {linked_thaw_id}.")
-            else:
-                latest_record = get_latest_log_for_thaw(conn, linked_thaw_id)
-                if latest_record:
-                    _queue_form_prefill(latest_record, meta={"kind": "thaw", "label": linked_thaw_id})
-                    _trigger_rerun()
-                else:
-                    st.info("No prior entries found for this Thaw ID to copy.")
-        else:
-            _clear_active_form_prefill(kind="thaw")
+submitted = st.form_submit_button("Save Entry", disabled=not form_ready)
 
-        submitted = st.form_submit_button("Save Entry", disabled=not form_ready)
+thaw_ids = get_thaw_ids_cached()
+latest_thaw_for_line = get_last_thaw_id(conn, cell_line) if cell_line else None
+thaw_select_help = "Associate this entry with a thaw history."
+thaw_special_auto = "(auto-generate new)"
+thaw_special_none = "(none)"
+thaw_options: List[str]
+thaw_index = 0
+if event_type == "Thawing":
+    thaw_options = [thaw_special_auto] + (thaw_ids or [])
+    thaw_select_help = "Select an existing thaw ID or auto-generate a new one."
+else:
+    thaw_options = [thaw_special_none] + (thaw_ids or [])
+    if latest_thaw_for_line and latest_thaw_for_line in thaw_ids:
+        thaw_index = thaw_options.index(latest_thaw_for_line)
+    thaw_select_help = "Associate with an existing thaw event (required for follow-ups)."
+
+with thaw_select_placeholder.container():
+    thaw_select_placeholder_value = thaw_options[thaw_index] if thaw_options else thaw_special_none
+    linked_thaw_id = st.selectbox(
+        "Thaw ID",
+        options=thaw_options,
+        index=thaw_index,
+        help=thaw_select_help,
+        key="linked_thaw_select",
+        placeholder=thaw_select_placeholder_value,
+    )
+
+active_meta = st.session_state.get("active_form_prefill_meta") or {}
+active_thaw_id = active_meta.get("label") if active_meta.get("kind") == "thaw" else None
+if linked_thaw_id not in (thaw_special_none, thaw_special_auto):
+    if active_thaw_id == linked_thaw_id:
+        st.caption(f"Fields prefilled from thaw {linked_thaw_id}.")
+    else:
+        latest_record = get_latest_log_for_thaw(conn, linked_thaw_id)
+        if latest_record:
+            _queue_form_prefill(latest_record, meta={"kind": "thaw", "label": linked_thaw_id})
+            _trigger_rerun()
+        else:
+            st.info("No prior entries found for this Thaw ID to copy.")
+else:
+    _clear_active_form_prefill(kind="thaw")
         if submitted:
             missing_labels = []
             def _is_blank(val):
