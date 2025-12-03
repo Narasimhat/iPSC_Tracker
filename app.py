@@ -733,126 +733,123 @@ with tab_add:
                 )
         with sched_col5:
             st.empty()
-        thaw_select_placeholder = st.empty()
-
-submitted = st.form_submit_button("Save Entry", disabled=not form_ready)
-
-thaw_ids = get_thaw_ids_cached()
-latest_thaw_for_line = get_last_thaw_id(conn, cell_line) if cell_line else None
-thaw_select_help = "Associate this entry with a thaw history."
-thaw_special_auto = "(auto-generate new)"
-thaw_special_none = "(none)"
-thaw_options: List[str]
-thaw_index = 0
-if event_type == "Thawing":
-    thaw_options = [thaw_special_auto] + (thaw_ids or [])
-    thaw_select_help = "Select an existing thaw ID or auto-generate a new one."
-else:
-    thaw_options = [thaw_special_none] + (thaw_ids or [])
-    if latest_thaw_for_line and latest_thaw_for_line in thaw_ids:
-        thaw_index = thaw_options.index(latest_thaw_for_line)
-    thaw_select_help = "Associate with an existing thaw event (required for follow-ups)."
-
-with thaw_select_placeholder.container():
-    thaw_select_placeholder_value = thaw_options[thaw_index] if thaw_options else thaw_special_none
-    linked_thaw_id = st.selectbox(
-        "Thaw ID",
-        options=thaw_options,
-        index=thaw_index,
-        help=thaw_select_help,
-        key="linked_thaw_select",
-        placeholder=thaw_select_placeholder_value,
-    )
-
-active_meta = st.session_state.get("active_form_prefill_meta") or {}
-active_thaw_id = active_meta.get("label") if active_meta.get("kind") == "thaw" else None
-if linked_thaw_id not in (thaw_special_none, thaw_special_auto):
-    if active_thaw_id == linked_thaw_id:
-        st.caption(f"Fields prefilled from thaw {linked_thaw_id}.")
-    else:
-        latest_record = get_latest_log_for_thaw(conn, linked_thaw_id)
-        if latest_record:
-            _queue_form_prefill(latest_record, meta={"kind": "thaw", "label": linked_thaw_id})
-            _trigger_rerun()
+        
+        thaw_ids = get_thaw_ids_cached()
+        latest_thaw_for_line = get_last_thaw_id(conn, cell_line) if cell_line else None
+        thaw_select_help = "Associate this entry with a thaw history."
+        thaw_special_auto = "(auto-generate new)"
+        thaw_special_none = "(none)"
+        thaw_options: List[str]
+        thaw_index = 0
+        if event_type == "Thawing":
+            thaw_options = [thaw_special_auto] + (thaw_ids or [])
+            thaw_select_help = "Select an existing thaw ID or auto-generate a new one."
         else:
-            st.info("No prior entries found for this Thaw ID to copy.")
-else:
-    _clear_active_form_prefill(kind="thaw")
-        if submitted:
-            missing_labels = []
-            def _is_blank(val):
-                return val is None or (isinstance(val, str) and not val.strip())
-            if _is_blank(cell_line):
-                missing_labels.append("Cell Line")
-            if _is_blank(vessel):
-                missing_labels.append("Vessel")
-            if _is_blank(location):
-                missing_labels.append("Location")
-            if _is_blank(medium):
-                missing_labels.append("Culture Medium")
-            if _is_blank(cell_type):
-                missing_labels.append("Cell Type")
-            if event_type == "Thawing" and _is_blank(cryo_vial_position):
-                missing_labels.append("Cryo Vial Position")
-            if event_type != "Thawing":
-                if not linked_thaw_id or linked_thaw_id == thaw_special_none:
-                    missing_labels.append("Linked Thaw ID")
-            if _is_blank(operator):
-                missing_labels.append("Operator")
-            if missing_labels:
-                st.error(f"Please fill required fields: {', '.join(missing_labels)}.")
-                st.stop()
-            if next_action_date and next_action_date < date.today():
-                st.error("Next Action Date cannot be in the past.")
-                st.stop()
-            if event_type == "Thawing":
-                if linked_thaw_id and linked_thaw_id not in (thaw_special_auto, thaw_special_none):
-                    thaw_id_val = linked_thaw_id
-                else:
-                    thaw_id_val = generate_thaw_id(conn, cell_line, operator, log_date)
+            thaw_options = [thaw_special_none] + (thaw_ids or [])
+            if latest_thaw_for_line and latest_thaw_for_line in thaw_ids:
+                thaw_index = thaw_options.index(latest_thaw_for_line)
+            thaw_select_help = "Associate with an existing thaw event (required for follow-ups)."
+
+        linked_thaw_id = st.selectbox(
+            "Thaw ID",
+            options=thaw_options,
+            index=thaw_index,
+            help=thaw_select_help,
+            key="linked_thaw_select",
+        )
+        
+        submitted = st.form_submit_button("Save Entry", disabled=not form_ready)
+
+    active_meta = st.session_state.get("active_form_prefill_meta") or {}
+    active_thaw_id = active_meta.get("label") if active_meta.get("kind") == "thaw" else None
+    if linked_thaw_id not in (thaw_special_none, thaw_special_auto):
+        if active_thaw_id == linked_thaw_id:
+            st.caption(f"Fields prefilled from thaw {linked_thaw_id}.")
+        else:
+            latest_record = get_latest_log_for_thaw(conn, linked_thaw_id)
+            if latest_record:
+                _queue_form_prefill(latest_record, meta={"kind": "thaw", "label": linked_thaw_id})
+                _trigger_rerun()
             else:
-                thaw_id_val = linked_thaw_id if linked_thaw_id and linked_thaw_id != thaw_special_none else ""
+                st.info("No prior entries found for this Thaw ID to copy.")
+    else:
+        _clear_active_form_prefill(kind="thaw")
 
-            final_passage = int(passage_no) if passage_no else None
-            if event_type == "Split" and split_auto:
-                final_passage = split_auto
+    if submitted:
+        missing_labels = []
+        def _is_blank(val):
+            return val is None or (isinstance(val, str) and not val.strip())
+        if _is_blank(cell_line):
+            missing_labels.append("Cell Line")
+        if _is_blank(vessel):
+            missing_labels.append("Vessel")
+        if _is_blank(location):
+            missing_labels.append("Location")
+        if _is_blank(medium):
+            missing_labels.append("Culture Medium")
+        if _is_blank(cell_type):
+            missing_labels.append("Cell Type")
+        if event_type == "Thawing" and _is_blank(cryo_vial_position):
+            missing_labels.append("Cryo Vial Position")
+        if event_type != "Thawing":
+            if not linked_thaw_id or linked_thaw_id == thaw_special_none:
+                missing_labels.append("Linked Thaw ID")
+        if _is_blank(operator):
+            missing_labels.append("Operator")
+        if missing_labels:
+            st.error(f"Please fill required fields: {', '.join(missing_labels)}.")
+            st.stop()
+        if next_action_date and next_action_date < date.today():
+            st.error("Next Action Date cannot be in the past.")
+            st.stop()
+        if event_type == "Thawing":
+            if linked_thaw_id and linked_thaw_id not in (thaw_special_auto, thaw_special_none):
+                thaw_id_val = linked_thaw_id
+            else:
+                thaw_id_val = generate_thaw_id(conn, cell_line, operator, log_date)
+        else:
+            thaw_id_val = linked_thaw_id if linked_thaw_id and linked_thaw_id != thaw_special_none else ""
 
-            resolved_assignee = None if assigned_to in (None, "(unassigned)") else assigned_to
-            auto_assignee_note = None
-            if (not resolved_assignee) and next_action_date:
-                weekend_owner = get_cached_weekend_assignment(next_action_date)
-                if weekend_owner:
-                    resolved_assignee = weekend_owner
-                    auto_assignee_note = weekend_owner
+        final_passage = int(passage_no) if passage_no else None
+        if event_type == "Split" and split_auto:
+            final_passage = split_auto
 
-            resolved_action_label = None if action_label_choice in (None, "(none)") else action_label_choice
+        resolved_assignee = None if assigned_to in (None, "(unassigned)") else assigned_to
+        auto_assignee_note = None
+        if (not resolved_assignee) and next_action_date:
+            weekend_owner = get_cached_weekend_assignment(next_action_date)
+            if weekend_owner:
+                resolved_assignee = weekend_owner
+                auto_assignee_note = weekend_owner
 
-            payload = {
-                "date": log_date.isoformat(),
-                "cell_line": cell_line,
-                "event_type": event_type,
-                "action_label": resolved_action_label,
-                "passage": final_passage,
-                "vessel": vessel,
-                "location": location,
-                "medium": medium,
-                "cell_type": cell_type,
-                "volume": float(volume) if volume is not None else None,
-                "notes": notes,
-                "operator": operator,
-                "thaw_id": thaw_id_val,
-                "cryo_vial_position": cryo_vial_position,
-                "image_path": None,
-                "assigned_to": resolved_assignee,
-                "next_action_date": next_action_date.isoformat() if next_action_date else None,
-                "created_by": operator,
-                "created_at": datetime.utcnow().isoformat(),
-            }
-            insert_log(conn, payload)
-            invalidate_logs_cache()
-            st.success("✅ Log entry saved to database!")
-            if auto_assignee_note:
-                st.info(f"Assigned to weekend duty: {auto_assignee_note}")
+        resolved_action_label = None if action_label_choice in (None, "(none)") else action_label_choice
+
+        payload = {
+            "date": log_date.isoformat(),
+            "cell_line": cell_line,
+            "event_type": event_type,
+            "action_label": resolved_action_label,
+            "passage": final_passage,
+            "vessel": vessel,
+            "location": location,
+            "medium": medium,
+            "cell_type": cell_type,
+            "volume": float(volume) if volume is not None else None,
+            "notes": notes,
+            "operator": operator,
+            "thaw_id": thaw_id_val,
+            "cryo_vial_position": cryo_vial_position,
+            "image_path": None,
+            "assigned_to": resolved_assignee,
+            "next_action_date": next_action_date.isoformat() if next_action_date else None,
+            "created_by": operator,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        insert_log(conn, payload)
+        invalidate_logs_cache()
+        st.success("✅ Log entry saved to database!")
+        if auto_assignee_note:
+            st.info(f"Assigned to weekend duty: {auto_assignee_note}")
 
     reuse_history = recent_history if 'recent_history' in locals() else []
     template_rows = list_entry_templates(conn)
@@ -1837,3 +1834,4 @@ with tab_settings:
     if st.button("Backup database and images"):
         out_dir = backup_now()
         st.success(f"Backup created: {out_dir}")
+
